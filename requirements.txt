@@ -1,4 +1,6 @@
 gymnasium[mujoco]==0.29.1
+gymnasium[atari]==0.29.1
+gymnasium[accept-rom-license]==0.29.1
 stable-baselines3==2.3.0
 numpy
 torch==2.6.0
