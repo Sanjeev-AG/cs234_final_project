@@ -80,22 +80,23 @@ class DQN(nn.Module):
         :param target_Q:
         :return:
         """
-        self.optimizer.zero_grad()
+
         # MSE error of the loss function
-        loss = torch.mean((target_Q - obtained_Q) ** 2)
+        # loss = torch.nn.functional.mse_loss(obtained_Q, target_Q)
+        loss = torch.nn.functional.smooth_l1_loss(obtained_Q, target_Q)
+        self.optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_value_(self.network.parameters(), 100)
         self.optimizer.step()
 
     def select_action(self, in_state):
-        output: torch.Tensor = self.forward(in_state)
+        if np.random.rand() < self.epsilon:
+            return self.env.action_space.sample()  # Take completely random action
 
-        # Choosing epsilon-greedy action:
-        index = torch.argmax(output)
-        p = torch.ones(output.shape) * self.epsilon / output.shape[-1]
-        p[index] += 1 - self.epsilon
+        with torch.no_grad():  # Don't track gradients during action selection
+            output = self.forward(in_state)
+            return torch.argmax(output).item()
 
-        action = torch.multinomial(p, num_samples=1)
-        return action.item()
 
 def np2torch(x, cast_double_to_float=True):
     """

@@ -32,8 +32,32 @@ def export_plot(ys, ylabel, title, filename):
     plt.close()
 
 
+def save_checkpoint(model, target_model, step, episode_rewards):
+    checkpoint = {
+        'model_state_dict': model.state_dict(),
+        'target_model_state_dict': target_model.state_dict(),
+        'optimizer_state_dict': model.optimizer.state_dict(),
+        'step': step,
+        'epsilon': model.epsilon,
+        'episode_rewards': episode_rewards,
+    }
+    torch.save(checkpoint, os.path.join(output_dir, "checkpoint.pt"))
+
+
+def load_checkpoint(model, target_model):
+    path = os.path.join(output_dir, "checkpoint.pt")
+    if not os.path.exists(path):
+        return None
+    checkpoint = torch.load(path, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    target_model.load_state_dict(checkpoint['target_model_state_dict'])
+    model.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    model.epsilon = checkpoint['epsilon']
+    return checkpoint
+
+
 # Training Loop Template
-def train():
+def train(resume=False):
     obs, _ = env.reset()
     obs = obs.astype(np.float32) / 255.0  # Normalize RAM [0,255] -> [0,1] [web:16]
     config = SeqQuestConfig()
@@ -44,10 +68,21 @@ def train():
     target_model.load_state_dict(model.state_dict())
     replay_buffer = ReplayBuffer(state_dim=obs_size, capacity=config.replay_buffer_size, device=device)
 
-    episode_reward = 0
+    start_step = 0
     episode_rewards = []
 
-    for step in range(100000):
+    if resume:
+        checkpoint = load_checkpoint(model, target_model)
+        if checkpoint:
+            start_step = checkpoint['step'] + 1
+            episode_rewards = checkpoint['episode_rewards']
+            print(f"Resumed from step {start_step}, {len(episode_rewards)} episodes, epsilon={model.epsilon:.4f}")
+        else:
+            print("No checkpoint found, starting fresh.")
+
+    episode_reward = 0
+
+    for step in range(start_step, 4000000):
 
         action = model.select_action(obs)
         next_obs, reward, terminated, truncated, _ = env.step(action)
@@ -59,7 +94,7 @@ def train():
 
         obs = next_obs
 
-        if replay_buffer.size >= replay_buffer.capacity:
+        if replay_buffer.size >= 10000:
             # Train the model:x
             (state, next_state, action, rewards, terminal) = replay_buffer.sample(batch_size=config.batch_size)
             with torch.no_grad():
@@ -71,26 +106,34 @@ def train():
             # Get the obtained Q for the action:
             obtained_Q = model.forward(state)
             q_action = torch.gather(obtained_Q, dim=1, index=action)
-            td_target = rewards + (config.gamma * max_Q * (1 - terminal))
+            td_target = rewards + (config.gamma * max_Q * (1 - terminal.float()))
 
             # Compute the loss function:
             model.compute_loss(q_action.squeeze(), td_target.squeeze())
 
         if done:
             episode_rewards.append(episode_reward)
-            print(f"Episode {len(episode_rewards)}, Reward: {episode_reward}")
+            print(f"Episode {len(episode_rewards)}, Reward: {episode_reward}, Steps: {step}")
             episode_reward = 0
             obs, _ = env.reset()
             obs = obs.astype(np.float32) / 255.0
 
         # Update the target model:
-        target_model = soft_update(model, target_model, tau=config.tau_weight)
+        # target_model = soft_update(model, target_model, tau=config.tau_weight)
+        if step % config.target_update_frequency == 0:
+            target_model.load_state_dict(model.state_dict())
 
-    # Save scores and plot
+
+        # Exponential decay of epsilon value:
+        model.epsilon = max(1.0 - step / 1_000_000, 0.05)
+
+
+    # Save scores, plot, and model checkpoint
     os.makedirs(output_dir, exist_ok=True)
     np.save(os.path.join(output_dir, "scores.npy"), episode_rewards)
     export_plot(episode_rewards, "Score", "Seaquest DQN", os.path.join(output_dir, "scores.png"))
-    print(f"Saved scores.npy and scores.png to {output_dir}/")
+    save_checkpoint(model, target_model, step, episode_rewards)
+    print(f"Saved scores.npy, scores.png, and checkpoint to {output_dir}/")
 
     return model
 
@@ -135,6 +178,7 @@ def evaluate(model: DQN):  # Pass your trained DQN model
 
 
 if __name__ == "__main__":
-    trained_model = train()
-    evaluate(trained_model)  # Uncomment to evaluate
-    pass
+    import sys
+    resume = "--resume" in sys.argv
+    trained_model = train(resume=resume)
+    evaluate(trained_model)
