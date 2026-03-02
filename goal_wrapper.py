@@ -24,34 +24,41 @@ class SeaQWrapper(gym.Wrapper):
         # Define the goal space:
         # Rescuing 6 divers and resurfacing once and killing 10 attackers would amount to 2000 + 200 = 2200 points.
         # So, the goal of HER is to accumulate enough points for learning a policy to maximize the reward.
-        self.achieved_goal = self._get_achieved_goal()
+        self.achieved_goal = self.get_achieved_goal()
 
     def reset(self, **kwargs):
         self.num_divers_collected = 0
         self.num_attackers_shot = 0
         self.num_surfaced_count = 0
 
-        self.achieved_goal = self._get_achieved_goal()
+        self.achieved_goal = self.get_achieved_goal()
         self.num_lives_left = 3
+
+        if "seed" in kwargs:
+            np.random.seed(kwargs["seed"])
+            torch.manual_seed(kwargs["seed"])
+
+        # Sample a goal from the set of goals for the Hindsight replay:
+        self.sample_goal()
 
         return self.env.reset(**kwargs)
 
 
-    def _get_achieved_goal(self):
-        return np.array([self.num_divers_collected, self.num_attackers_shot, self.num_surfaced_count])
+    def get_achieved_goal(self):
+        return torch.tensor([self.num_attackers_shot, self.num_divers_collected, self.num_surfaced_count])
 
     def step(self, action):
         next_obs, reward, terminated, truncated, _ = self.env.step(action)
 
         self.update_objective_values(reward, next_obs)
-        reward_her = self.compute_reward(reward)
+        reward_her = self.compute_reward()
 
-        return next_obs, reward, terminated, truncated, self.achieved_goal, reward_her
+        return next_obs, reward, terminated, truncated, reward_her
 
-    def compute_reward(self, desired_goal):
-        self.achieved_goal = self._get_achieved_goal()
+    def compute_reward(self):
+        self.achieved_goal = self.get_achieved_goal()
         reward = 0
-        for idx, goal in enumerate(desired_goal):
+        for idx, goal in enumerate(self.desired_goal):
             if self.achieved_goal[idx] < goal:
                 reward = -1
                 break
@@ -84,7 +91,7 @@ class SeaQWrapper(gym.Wrapper):
         num_resurfaces = random.randint(a=0, b=self.max_num_surfaced_count)
         num_divers_to_collect = random.randint(a=0, b=6) + 6*num_resurfaces
 
-        self.desired_goal = np.array([num_attackers_to_shoot, num_divers_to_collect, num_resurfaces])
+        self.desired_goal = torch.tensor([num_attackers_to_shoot, num_divers_to_collect, num_resurfaces])
 
     def set_max_goals(self, average_reward):
         # ToDo: Dynamically set the max goals once the network has achieved them

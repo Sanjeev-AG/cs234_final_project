@@ -13,7 +13,7 @@ class SeqQuestConfig:
         self.layer_size = 256
         self.epsilon = 1
         self.epsilon_delay = -3e-7
-        self.replay_buffer_size = 500000
+        self.replay_buffer_size = 2000000
         self.target_update_frequency = 10000
 
         self.tau_weight = 0.005

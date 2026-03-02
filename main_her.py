@@ -1,3 +1,4 @@
+import argparse
 import gymnasium as gym
 import numpy as np
 import os
@@ -5,7 +6,7 @@ import torch
 import matplotlib
 matplotlib.use("agg")
 import matplotlib.pyplot as plt
-from dqn import DQN, ReplayBuffer
+from dqn_her import DQN, ReplayBuffer
 from config import SeqQuestConfig
 import ale_py
 from goal_wrapper import SeaQWrapper
@@ -59,19 +60,17 @@ def load_checkpoint(model, target_model):
 
 
 # Training Loop Template
-def train(resume=False):
-    obs, _ = env.reset()
+def train(resume=False, seed=0):
+    obs, _ = env.reset(seed=seed)
     obs = obs.astype(np.float32) / 255.0  # Normalize RAM [0,255] -> [0,1] [web:16]
-    # Sample a goal from the set of goals for the Hindsight replay:
-    env.sample_goal()
-
+    time_step = 0
     config = SeqQuestConfig()
     model = DQN(env=env, config=config)
 
     # Initialize the target action value as the model.
     target_model = DQN(env=env, config=config)
     target_model.load_state_dict(model.state_dict())
-    replay_buffer = ReplayBuffer(state_dim=obs_size, capacity=config.replay_buffer_size, device=device)
+    replay_buffer = ReplayBuffer(state_dim=obs_size, capacity=config.replay_buffer_size, device=device, goal_dim=env.num_goal_dimension)
 
     start_step = 0
     episode_rewards = []
@@ -88,31 +87,32 @@ def train(resume=False):
     episode_reward = 0
 
     for step in range(start_step, 4000000):
-
         action = model.select_action(obs, goal=env.desired_goal)
-        next_obs, reward, terminated, truncated, _ = env.step(action)
+        next_obs, reward, terminated, truncated, reward_her = env.step(action)
         next_obs = next_obs.astype(np.float32) / 255.0
         done = terminated or truncated
 
-        replay_buffer.push(obs, action, reward, next_obs, done)
+        replay_buffer.push(obs, action, reward_her, next_obs, done, env.desired_goal)
+        time_step += 1 # Update the number of timesteps in the episodes
+
         episode_reward += reward
 
         obs = next_obs
 
         if replay_buffer.size >= 10000:
             # Train the model:x
-            (state, next_state, action, rewards, terminal) = replay_buffer.sample(batch_size=config.batch_size)
+            (state, next_state, action, rewards, terminal, goal) = replay_buffer.sample(batch_size=config.batch_size)
             with torch.no_grad():
                 # Get the max Q values for the next state:
                 # Applying Double DQN to avoid overestimation bias to be propagated.
-                next_state_Q = model.forward(next_state)
-                target_next_state_Q = target_model.forward(next_state)
+                next_state_Q = model.forward(next_state, goal=goal)
+                target_next_state_Q = target_model.forward(next_state, goal=goal)
                 max_action = next_state_Q.max(dim=1).indices
                 max_action = max_action.reshape((max_action.shape[0], 1))
                 max_Q = torch.gather(target_next_state_Q, dim=1, index=max_action)
 
             # Get the obtained Q for the action:
-            obtained_Q = model.forward(state)
+            obtained_Q = model.forward(state, goal=goal)
             q_action = torch.gather(obtained_Q, dim=1, index=action)
             td_target = rewards + (config.gamma * max_Q * (1 - terminal.float()))
 
@@ -122,8 +122,21 @@ def train(resume=False):
         if done:
             episode_rewards.append(episode_reward)
             print(f"Episode {len(episode_rewards)}, Reward: {episode_reward}, Steps: {step}")
+
+            # If the terminal state still has reward_her set to -1,
+            # then we need to update the goal based on the terminal state:
+            if reward_her == -1:
+                # Get the updated goal:
+                achieved_goal = env.get_achieved_goal()
+                # Update the replay buffer with N transitions:
+                (state, next_state, action, rewards, terminal, goal) = replay_buffer.fetch_last_N_samples(time_step)
+                # Update the goal state:
+                replay_buffer.push_batch(state, next_state, action, rewards, terminal, achieved_goal)
+
+            # Reset the environment:
+            time_step = 0
             episode_reward = 0
-            obs, _ = env.reset()
+            obs, _ = env.reset(seed=seed)
             obs = obs.astype(np.float32) / 255.0
 
         # Update the target model:
@@ -165,12 +178,15 @@ def evaluate(model: DQN):  # Pass your trained DQN model
     obs = obs.astype(np.float32) / 255.0
     total_reward = 0
 
+    # Set an extremely high goal during evaluation
+    env.desired_goal = np.array([5000, 480, 60])
+
     # Trying to set the epsilon to a minimum value to avoid epsilon greedy action
     model.epsilon = 0.0001
 
     for _ in range(1000):
         with torch.no_grad():
-            action = model.select_action(obs)
+            action = model.select_action(obs, goal=env.desired_goal)
 
         obs, reward, terminated, truncated, _ = env.step(action)
         obs = obs.astype(np.float32) / 255.0
@@ -185,7 +201,10 @@ def evaluate(model: DQN):  # Pass your trained DQN model
 
 
 if __name__ == "__main__":
-    import sys
-    resume = "--resume" in sys.argv
-    trained_model = train(resume=resume)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--seed", type=int, default=0, help="Random seed")
+    parser.add_argument("--resume", action="store_true", help="Resume from checkpoint")
+    args = parser.parse_args()
+
+    trained_model = train(resume=args.resume, seed=args.seed)
     evaluate(trained_model)
