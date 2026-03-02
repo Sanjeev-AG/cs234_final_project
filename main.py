@@ -1,3 +1,4 @@
+import argparse
 import gymnasium as gym
 import numpy as np
 import os
@@ -57,8 +58,10 @@ def load_checkpoint(model, target_model):
 
 
 # Training Loop Template
-def train(resume=False):
-    obs, _ = env.reset()
+def train(resume=False, use_ddqn=False, seed=0):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    obs, _ = env.reset(seed=seed)
     obs = obs.astype(np.float32) / 255.0  # Normalize RAM [0,255] -> [0,1] [web:16]
     config = SeqQuestConfig()
     model = DQN(env=env, config=config)
@@ -98,10 +101,18 @@ def train(resume=False):
             # Train the model:x
             (state, next_state, action, rewards, terminal) = replay_buffer.sample(batch_size=config.batch_size)
             with torch.no_grad():
-                # Get the max Q values for the next state:
-                next_state_Q = target_model.forward(next_state)
-                max_Q = next_state_Q.max(dim=1).values
-                max_Q = max_Q.reshape((max_Q.shape[0], 1))
+                if use_ddqn:
+                    # Double DQN: online model selects action, target model evaluates
+                    next_state_Q = model.forward(next_state)
+                    target_next_state_Q = target_model.forward(next_state)
+                    max_action = next_state_Q.max(dim=1).indices
+                    max_action = max_action.reshape((max_action.shape[0], 1))
+                    max_Q = torch.gather(target_next_state_Q, dim=1, index=max_action)
+                else:
+                    # Vanilla DQN: target model selects and evaluates
+                    next_state_Q = target_model.forward(next_state)
+                    max_Q = next_state_Q.max(dim=1).values
+                    max_Q = max_Q.reshape((max_Q.shape[0], 1))
 
             # Get the obtained Q for the action:
             obtained_Q = model.forward(state)
@@ -178,7 +189,11 @@ def evaluate(model: DQN):  # Pass your trained DQN model
 
 
 if __name__ == "__main__":
-    import sys
-    resume = "--resume" in sys.argv
-    trained_model = train(resume=resume)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--seed", type=int, default=0, help="Random seed")
+    parser.add_argument("--ddqn", action="store_true", help="Use Double DQN")
+    parser.add_argument("--resume", action="store_true", help="Resume from checkpoint")
+    args = parser.parse_args()
+
+    trained_model = train(resume=args.resume, use_ddqn=args.ddqn, seed=args.seed)
     evaluate(trained_model)
