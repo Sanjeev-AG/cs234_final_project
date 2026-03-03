@@ -66,6 +66,11 @@ class ReplayBuffer(object):
                       done_batch[index],
                       goal_batch)
 
+    def update_last_index_reward(self, reward):
+        last_ptr = (self.ptr-1) % self.capacity
+        self.reward[last_ptr] = 0
+
+
 
 
 

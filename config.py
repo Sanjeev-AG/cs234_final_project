@@ -4,7 +4,7 @@ import torch.nn as nn
 class SeqQuestConfig:
     def __init__(self):
         # model and training config
-        self.batch_size = 128  # number of steps used to compute each policy update
+        self.batch_size = 256  # number of steps used to compute each policy update
         self.lr = 1e-4
         self.gamma = 0.99  # the discount factor
 

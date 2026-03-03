@@ -121,22 +121,27 @@ def train(resume=False, seed=0):
 
         if done:
             episode_rewards.append(episode_reward)
-            print(f"Episode {len(episode_rewards)}, Reward: {episode_reward}, Steps: {step}")
+            achieved_goal = env.get_achieved_goal()
+            env.update_history()
+
+            print(f"Episode {len(episode_rewards)}, Reward: {episode_reward}, Steps: {step},"
+                  f"Achieved goal: {achieved_goal}, Desired goal: {env.desired_goal}, reward_her: {reward_her}")
+
 
             # If the terminal state still has reward_her set to -1,
             # then we need to update the goal based on the terminal state:
             if reward_her == -1:
-                # Get the updated goal:
-                achieved_goal = env.get_achieved_goal()
                 # Update the replay buffer with N transitions:
                 (state, next_state, action, rewards, terminal, goal) = replay_buffer.fetch_last_N_samples(time_step)
                 # Update the goal state:
                 replay_buffer.push_batch(state, next_state, action, rewards, terminal, achieved_goal)
+                # Update the last inde:
+                replay_buffer.update_last_index_reward(reward=0)
 
             # Reset the environment:
             time_step = 0
             episode_reward = 0
-            obs, _ = env.reset(seed=seed)
+            obs, _ = env.reset()
             obs = obs.astype(np.float32) / 255.0
 
         # Update the target model:
