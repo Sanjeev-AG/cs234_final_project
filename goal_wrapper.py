@@ -9,23 +9,35 @@ class SeaQWrapper(gym.Wrapper):
     def __init__(self, env):
         super(SeaQWrapper, self).__init__(env)
         self.num_goal_dimension = 3
+        self.updated_max_goals = False
 
         # Initializing SeaQuest parameters:
         self.num_divers_collected = 0
+        self.num_divers_lost = 0
+        self._previous_state_num_divers = 0
         self.num_attackers_shot = 0
         self.num_surfaced_count = 0
-        self.num_lives_left = 3 # By default there are 3 lives left.
+        self.curr_num_lives_left = 3 # By default there are 3 lives left.
+
+        self.prev_oxygen_level = 0
+        self.curr_oxygen_level = 0
+        self.prev_num_lives_left = 0
+        self.wait_for_oxygen_refill = True
+
 
         self.desired_goal = None
         self.max_divers_to_collect = 1
-        self.max_num_surfaced_count = 0
-        self.max_num_attackers_to_shoot = 5
+        self.max_num_surfaced_count = 1
+        self.max_num_attackers_to_shoot = 2
         self.max_len_history = 100
+
+        self.max_possible_num_attackers_to_shoot = 5000
+        self.max_possible_num_divers_to_collect = 600
+        self.max_possible_num_surfaced_count = 40
 
         self.num_attackers_shot_history = deque([0] * self.max_len_history, maxlen=self.max_len_history)
         self.num_surfaced_count_history = deque([0] * self.max_len_history, maxlen=self.max_len_history)
         self.num_divers_collected_history = deque([0] * self.max_len_history, maxlen=self.max_len_history)
-
 
         # Define the goal space:
         # Rescuing 6 divers and resurfacing once and killing 10 attackers would amount to 2000 + 200 = 2200 points.
@@ -36,9 +48,14 @@ class SeaQWrapper(gym.Wrapper):
         self.num_divers_collected = 0
         self.num_attackers_shot = 0
         self.num_surfaced_count = 0
+        self._previous_state_num_divers = 0
+        self.prev_oxygen_level = 0
+        self.curr_oxygen_level = 0
+        self.prev_num_lives_left = 0
+        self.wait_for_oxygen_refill = True
 
         self.achieved_goal = self.get_achieved_goal()
-        self.num_lives_left = 3
+        self.curr_num_lives_left = 3
 
         if "seed" in kwargs:
             np.random.seed(kwargs["seed"])
@@ -91,39 +108,74 @@ class SeaQWrapper(gym.Wrapper):
         # If we have a resurfaced with 6 divers, then at minimum the number of points seems to be 6
         # For Seaquest, byte 62 provides the num divers collected
 
-        if float(reward) > 500:
+        # The max value oxygen meter can take is 64. It can have the same value across frames:
+        # Each time it resurfaces, the oxygen meter increases to 64.
+        self.curr_oxygen_level = state[102]
+        self.curr_num_lives_left = state[59]
+
+        if self.prev_num_lives_left > self.curr_num_lives_left:
+            self.wait_for_oxygen_refill = True
+
+        if self.curr_oxygen_level > self.prev_oxygen_level and not self.wait_for_oxygen_refill:
             self.num_surfaced_count += 1
+            self.wait_for_oxygen_refill = True
 
-        # State should be an array
-        self.num_divers_collected = state[62] + 6*self.num_surfaced_count
+        if self.curr_oxygen_level == 64:
+            self.wait_for_oxygen_refill = False
 
-        # Currently the num_lives_left is not in goal space.
-        # ToDo: Add the num lives left to goal space and see how the policy behaves
-        self.num_lives_left = state[59]
+        self.prev_oxygen_level = self.curr_oxygen_level
+        self.prev_num_lives_left = self.curr_num_lives_left
+
+
+        if state[62] > self._previous_state_num_divers:
+            self.num_divers_collected += (state[62] - self._previous_state_num_divers)
+
+        self._previous_state_num_divers = state[62]
 
     def sample_goal(self):
         # This function helps to sample the desired goal.
-
-        num_attackers_to_shoot = random.randint(a=1, b=self.max_num_attackers_to_shoot)
-        num_divers_to_collect = random.randint(a=0, b=self.max_divers_to_collect)
-        num_resurfaces = random.randint(a=0, b=num_divers_to_collect//6)
+        if random.random() >= 0.7:
+            num_attackers_to_shoot = random.randint(a=1, b=self.max_num_attackers_to_shoot)
+            num_divers_to_collect = random.randint(a=1, b=self.max_divers_to_collect)
+            num_resurfaces = random.randint(a=1, b=self.max_num_surfaced_count)
+        else:
+            num_attackers_to_shoot = self.max_num_attackers_to_shoot
+            num_divers_to_collect = self.max_divers_to_collect
+            num_resurfaces = self.max_num_surfaced_count
 
         self.desired_goal = torch.tensor([num_attackers_to_shoot, num_divers_to_collect, num_resurfaces])
 
     def update_max_goals(self):
-        # ToDo: Dynamically set the max goals once the network has achieved them
-        if sum(self.num_attackers_shot_history)/len(self.num_attackers_shot_history) > 0.9:
+        self.updated_max_goals = False
+        if sum(self.num_attackers_shot_history)/self.max_len_history > 0.8:
             # Increase by 5 if the achieved goal exceeds by 90%
-            self.max_num_attackers_to_shoot += 5
+            self.max_num_attackers_to_shoot += 1
             self.num_attackers_shot_history = deque([0] * self.max_len_history, maxlen=self.max_len_history)
+            self.updated_max_goals = True
 
-        if sum(self.num_divers_collected_history)/len(self.num_divers_collected_history) > 0.9:
+        if sum(self.num_divers_collected_history)/self.max_len_history > 0.8:
             # Increment by 2 divers to collect if the achieved goal exceeds by 90%
-            self.max_divers_to_collect += 2
-            self.num_surfaced_count_history = deque([0] * self.max_len_history, maxlen=self.max_len_history)
+            self.max_divers_to_collect += 1
+            self.num_divers_collected_history = deque([0] * self.max_len_history, maxlen=self.max_len_history)
+            self.updated_max_goals = True
 
-        if self.max_divers_to_collect > 6:
-            self.max_num_surfaced_count = self.max_divers_to_collect // 6
+        if sum(self.num_surfaced_count_history)/self.max_len_history > 0.8:
+            self.max_num_surfaced_count += 1
+            self.updated_max_goals = True
+
+    def normalize_goals(self, goal):
+        # Normalize the goals in each dimension to ensure they are between 0 and 1
+        # Perform logaathamic scaling:
+        # ToDo: Try linear scaling with reduced possible goals incase it doesn't work
+        normalized_goal = torch.zeros([len(self.desired_goal)], dtype=torch.float)
+        max_possible_goals = [self.max_possible_num_attackers_to_shoot, self.max_possible_num_divers_to_collect, self.max_possible_num_surfaced_count]
+        for i in range(len(goal)):
+            normalized_goal[i] = np.log(1+goal[i])/np.log(1+max_possible_goals[i])
+
+        return normalized_goal
+
+
+
 
 
 

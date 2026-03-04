@@ -9,8 +9,8 @@ class SeqQuestConfig:
         self.gamma = 0.99  # the discount factor
 
         # parameters for the policy and baseline models
-        self.n_layers = 1
-        self.layer_size = 256
+        self.n_layers = 2
+        self.layer_size = 512
         self.epsilon = 1
         self.epsilon_delay = -3e-7
         self.replay_buffer_size = 2000000

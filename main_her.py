@@ -66,6 +66,7 @@ def train(resume=False, seed=0):
     time_step = 0
     config = SeqQuestConfig()
     model = DQN(env=env, config=config)
+    obtained_goals = []
 
     # Initialize the target action value as the model.
     target_model = DQN(env=env, config=config)
@@ -86,11 +87,12 @@ def train(resume=False, seed=0):
 
     episode_reward = 0
 
-    for step in range(start_step, 4000000):
-        action = model.select_action(obs, goal=env.desired_goal)
+    for step in range(start_step, 10000000):
+        action = model.select_action(obs, goal=env.normalize_goals(env.desired_goal))
         next_obs, reward, terminated, truncated, reward_her = env.step(action)
         next_obs = next_obs.astype(np.float32) / 255.0
         done = terminated or truncated
+        obtained_goals.append(env.get_achieved_goal())
 
         replay_buffer.push(obs, action, reward_her, next_obs, done, env.desired_goal)
         time_step += 1 # Update the number of timesteps in the episodes
@@ -134,23 +136,27 @@ def train(resume=False, seed=0):
                 # Update the replay buffer with N transitions:
                 (state, next_state, action, rewards, terminal, goal) = replay_buffer.fetch_last_N_samples(time_step)
                 # Update the goal state:
-                replay_buffer.push_batch(state, next_state, action, rewards, terminal, achieved_goal)
+                replay_buffer.push_batch(state, next_state, action, rewards, terminal, achieved_goal, obtained_goals)
                 # Update the last inde:
                 replay_buffer.update_last_index_reward(reward=0)
 
             # Reset the environment:
             time_step = 0
             episode_reward = 0
+            obtained_goals = []
             obs, _ = env.reset()
+            if env.updated_max_goals:
+                model.epsilon = max(model.epsilon, 0.5) # Restart the exploration phase to learn a new goal
             obs = obs.astype(np.float32) / 255.0
+
+            # Exponential decay of epsilon value:
+            # model.epsilon = max(1.0 - step / 1_000_000, 0.05)
+            model.epsilon = max(0.05, model.epsilon * 0.9995)
 
         # Update the target model:
         # target_model = soft_update(model, target_model, tau=config.tau_weight)
         if step % config.target_update_frequency == 0:
             target_model.load_state_dict(model.state_dict())
-
-        # Exponential decay of epsilon value:
-        model.epsilon = max(1.0 - step / 1_000_000, 0.05)
 
 
     # Save scores, plot, and model checkpoint
@@ -184,14 +190,14 @@ def evaluate(model: DQN):  # Pass your trained DQN model
     total_reward = 0
 
     # Set an extremely high goal during evaluation
-    env.desired_goal = np.array([5000, 480, 60])
+    env.desired_goal = torch.tensor([5000, 480, 60])
 
     # Trying to set the epsilon to a minimum value to avoid epsilon greedy action
     model.epsilon = 0.0001
 
     for _ in range(1000):
         with torch.no_grad():
-            action = model.select_action(obs, goal=env.desired_goal)
+            action = model.select_action(obs, goal=env.normalize_goals(env.desired_goal))
 
         obs, reward, terminated, truncated, _ = env.step(action)
         obs = obs.astype(np.float32) / 255.0
