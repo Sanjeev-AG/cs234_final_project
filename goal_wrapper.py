@@ -27,7 +27,7 @@ class SeaQWrapper(gym.Wrapper):
 
         self.desired_goal = None
         self.max_divers_to_collect = 1
-        self.max_num_surfaced_count = 1
+        self.max_num_surfaced_count = 0
         self.max_num_attackers_to_shoot = 2
         self.max_len_history = 100
 
@@ -110,22 +110,26 @@ class SeaQWrapper(gym.Wrapper):
 
         # The max value oxygen meter can take is 64. It can have the same value across frames:
         # Each time it resurfaces, the oxygen meter increases to 64.
-        self.curr_oxygen_level = state[102]
+        # self.curr_oxygen_level = state[102]
         self.curr_num_lives_left = state[59]
+        #
+        # if self.prev_num_lives_left > self.curr_num_lives_left:
+        #     self.wait_for_oxygen_refill = True
+        #
+        # if self.curr_oxygen_level > self.prev_oxygen_level and not self.wait_for_oxygen_refill:
+        #     self.num_surfaced_count += 1
+        #     self.wait_for_oxygen_refill = True
+        #
+        # if self.curr_oxygen_level == 64:
+        #     self.wait_for_oxygen_refill = False
+        #
+        # self.prev_oxygen_level = self.curr_oxygen_level
 
-        if self.prev_num_lives_left > self.curr_num_lives_left:
-            self.wait_for_oxygen_refill = True
-
-        if self.curr_oxygen_level > self.prev_oxygen_level and not self.wait_for_oxygen_refill:
+        if state[62] == 0 and self._previous_state_num_divers == 6 and self.curr_num_lives_left == self.prev_num_lives_left:
+            # These conditions would mean the submarine has resurfaced with 6 divers.
             self.num_surfaced_count += 1
-            self.wait_for_oxygen_refill = True
 
-        if self.curr_oxygen_level == 64:
-            self.wait_for_oxygen_refill = False
-
-        self.prev_oxygen_level = self.curr_oxygen_level
         self.prev_num_lives_left = self.curr_num_lives_left
-
 
         if state[62] > self._previous_state_num_divers:
             self.num_divers_collected += (state[62] - self._previous_state_num_divers)
@@ -150,18 +154,20 @@ class SeaQWrapper(gym.Wrapper):
         if sum(self.num_attackers_shot_history)/self.max_len_history > 0.8:
             # Increase by 5 if the achieved goal exceeds by 90%
             self.max_num_attackers_to_shoot += 1
-            self.num_attackers_shot_history = deque([0] * self.max_len_history, maxlen=self.max_len_history)
+            self.num_attackers_shot_history.clear()
             self.updated_max_goals = True
 
         if sum(self.num_divers_collected_history)/self.max_len_history > 0.8:
             # Increment by 2 divers to collect if the achieved goal exceeds by 90%
             self.max_divers_to_collect += 1
-            self.num_divers_collected_history = deque([0] * self.max_len_history, maxlen=self.max_len_history)
+            self.num_divers_collected_history.clear()
             self.updated_max_goals = True
 
         if sum(self.num_surfaced_count_history)/self.max_len_history > 0.8:
-            self.max_num_surfaced_count += 1
-            self.updated_max_goals = True
+            if self.max_num_surfaced_count < self.max_divers_to_collect //6:
+                self.max_num_surfaced_count += 1
+                self.num_surfaced_count_history.clear()
+                self.updated_max_goals = True
 
     def normalize_goals(self, goal):
         # Normalize the goals in each dimension to ensure they are between 0 and 1

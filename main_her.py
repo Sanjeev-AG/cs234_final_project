@@ -87,7 +87,7 @@ def train(resume=False, seed=0):
 
     episode_reward = 0
 
-    for step in range(start_step, 10000000):
+    for step in range(start_step, 5000000):
         action = model.select_action(obs, goal=env.normalize_goals(env.desired_goal))
         next_obs, reward, terminated, truncated, reward_her = env.step(action)
         next_obs = next_obs.astype(np.float32) / 255.0
@@ -107,14 +107,14 @@ def train(resume=False, seed=0):
             with torch.no_grad():
                 # Get the max Q values for the next state:
                 # Applying Double DQN to avoid overestimation bias to be propagated.
-                next_state_Q = model.forward(next_state, goal=goal)
-                target_next_state_Q = target_model.forward(next_state, goal=goal)
+                next_state_Q = model.forward(next_state, goal=env.normalize_goals(goal))
+                target_next_state_Q = target_model.forward(next_state, goal=env.normalize_goals(goal))
                 max_action = next_state_Q.max(dim=1).indices
                 max_action = max_action.reshape((max_action.shape[0], 1))
                 max_Q = torch.gather(target_next_state_Q, dim=1, index=max_action)
 
             # Get the obtained Q for the action:
-            obtained_Q = model.forward(state, goal=goal)
+            obtained_Q = model.forward(state, goal=env.normalize_goals(goal))
             q_action = torch.gather(obtained_Q, dim=1, index=action)
             td_target = rewards + (config.gamma * max_Q * (1 - terminal.float()))
 
@@ -123,22 +123,18 @@ def train(resume=False, seed=0):
 
         if done:
             episode_rewards.append(episode_reward)
-            achieved_goal = env.get_achieved_goal()
             env.update_history()
 
             print(f"Episode {len(episode_rewards)}, Reward: {episode_reward}, Steps: {step},"
-                  f"Achieved goal: {achieved_goal}, Desired goal: {env.desired_goal}, reward_her: {reward_her}")
+                  f"Achieved goal: {obtained_goals[-1]}, Desired goal: {env.desired_goal}, reward_her: {reward_her}")
 
 
             # If the terminal state still has reward_her set to -1,
             # then we need to update the goal based on the terminal state:
-            if reward_her == -1:
-                # Update the replay buffer with N transitions:
-                (state, next_state, action, rewards, terminal, goal) = replay_buffer.fetch_last_N_samples(time_step)
-                # Update the goal state:
-                replay_buffer.push_batch(state, next_state, action, rewards, terminal, achieved_goal, obtained_goals)
-                # Update the last inde:
-                replay_buffer.update_last_index_reward(reward=0)
+            # Update the replay buffer with N transitions:
+            (state, next_state, action, _, terminal, goal) = replay_buffer.fetch_last_N_samples(time_step)
+            # Update the goal state:
+            replay_buffer.push_batch(state, next_state, action, terminal, obtained_goals)
 
             # Reset the environment:
             time_step = 0

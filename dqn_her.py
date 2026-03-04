@@ -1,14 +1,17 @@
+import random
+
 import numpy as np
 import torch
 import torch.nn as nn
 from network_utils import build_mlp, device, np2torch
 
 class ReplayBuffer(object):
-    def __init__(self, state_dim, goal_dim, capacity, device):
+    def __init__(self, state_dim, goal_dim, capacity, device, num_k=4):
         self.capacity = capacity
         self.device = device
         self.ptr = 0
         self.size = 0
+        self.num_k = num_k
 
         self.state = torch.zeros((capacity, state_dim), dtype=torch.float32).to(device)
         self.next_state = torch.zeros((capacity, state_dim), dtype=torch.float32).to(device)
@@ -26,6 +29,7 @@ class ReplayBuffer(object):
             self.reward[self.ptr] = torch.as_tensor(reward, dtype=torch.float32).to(device)
             self.done[self.ptr] = torch.as_tensor(done, dtype=torch.uint8).to(device)
             self.goal[self.ptr] = torch.as_tensor(goal, dtype=torch.float32).to(device)
+
 
         self.ptr = (self.ptr + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
@@ -52,19 +56,29 @@ class ReplayBuffer(object):
         :return:
         """
 
-        indices = np.arange(self.size-N, self.size)
+        indices = np.arange(self.size-N, self.size) % self.capacity
         return self._fetch_indices(indices)
 
-    def push_batch(self, state_batch, next_state_batch, action_batch, reward_batch, done_batch, goal_batch):
+    def push_batch(self, state_batch, next_state_batch, action_batch, done_batch, obtained_goals):
         # Get the batch size:
         num_samples = state_batch.shape[0]
         for index in range(num_samples):
-            self.push(state_batch[index],
-                      action_batch[index],
-                      reward_batch[index],
-                      next_state_batch[index],
-                      done_batch[index],
-                      goal_batch)
+
+                if index == num_samples-1:
+                    continue
+
+                goal_sample_indices = np.random.randint(low=index+1, high=num_samples-1, size=self.num_k)
+
+                for goal_idx in goal_sample_indices:
+                    success = (obtained_goals[index] >= obtained_goals[goal_idx]).all().item()
+                    adjusted_reward = 0.0 if success else -1.0
+
+                    self.push(state_batch[index],
+                              action_batch[index],
+                              adjusted_reward,
+                              next_state_batch[index],
+                              done_batch[index],
+                              obtained_goals[goal_idx])
 
     def update_last_index_reward(self, reward):
         last_ptr = (self.ptr-1) % self.capacity
@@ -110,6 +124,7 @@ class DQN(nn.Module):
         """
         if isinstance(obs, np.ndarray):
             obs = np2torch(obs)
+        goal = goal.to(obs.device).float()
         obs = torch.cat((obs, goal), dim=-1)
         output = self.network.forward(obs.float()).squeeze()
         return output
