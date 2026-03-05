@@ -1,7 +1,10 @@
+"""
+This file contains the configuration for the SeaQuest project, including hyperparameters for the model and training process.
+"""
+
 import torch.nn as nn
 
-
-class SeqQuestConfig:
+class SeaQuestConfig:
     def __init__(self):
         # model and training config
         self.batch_size = 256  # number of steps used to compute each policy update

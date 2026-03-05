@@ -1,3 +1,7 @@
+"""
+Main training loop for DQN on the Seaquest environment.
+"""
+
 import argparse
 import gymnasium as gym
 import numpy as np
@@ -7,9 +11,10 @@ import matplotlib
 matplotlib.use("agg")
 import matplotlib.pyplot as plt
 from dqn import DQN, ReplayBuffer
-from config import SeqQuestConfig
+from config import SeaQuestConfig
 import ale_py
 
+# Register the Atari environments with Gymnasium
 gym.register_envs(ale_py)
 
 # Environment Setup
@@ -24,6 +29,9 @@ output_dir = "results"
 
 
 def export_plot(ys, ylabel, title, filename):
+    """
+    Create and save a plot of the given values.
+    """
     plt.figure()
     plt.plot(range(len(ys)), ys)
     plt.xlabel("Training Episode")
@@ -34,6 +42,15 @@ def export_plot(ys, ylabel, title, filename):
 
 
 def save_checkpoint(model, target_model, step, episode_rewards):
+    """
+    Saves checkpoint of the training process for (D)DQN.
+
+    Args:
+        model:              DQN model to be saved
+        target_model:       Target DQN model to be saved
+        step:               Current training step to be saved
+        episode_rewards:    List of episode rewards to be saved
+    """
     checkpoint = {
         'model_state_dict': model.state_dict(),
         'target_model_state_dict': target_model.state_dict(),
@@ -46,6 +63,16 @@ def save_checkpoint(model, target_model, step, episode_rewards):
 
 
 def load_checkpoint(model, target_model):
+    """
+    Loads checkpoint of the training process for (D)DQN.
+
+    Args:
+        model:          DQN model to be loaded
+        target_model:   Target DQN model to be loaded
+    Returns:
+        checkpoint:     Loaded checkpoint dictionary, or None if no checkpoint found
+    """
+    
     path = os.path.join(output_dir, "checkpoint.pt")
     if not os.path.exists(path):
         return None
@@ -59,11 +86,19 @@ def load_checkpoint(model, target_model):
 
 # Training Loop Template
 def train(resume=False, use_ddqn=False, seed=0):
+    """
+    Training loop for DQN and Double DQN on the Seaquest environment.
+
+    Args:
+        resume:     Whether to resume training from a checkpoint
+        use_ddqn:   Whether to use Double DQN (if False, uses vanilla DQN)
+        seed:       Random seed for reproducibility
+    """
     np.random.seed(seed)
     torch.manual_seed(seed)
     obs, _ = env.reset(seed=seed)
     obs = obs.astype(np.float32) / 255.0  # Normalize RAM [0,255] -> [0,1] [web:16]
-    config = SeqQuestConfig()
+    config = SeaQuestConfig()
     model = DQN(env=env, config=config)
 
     # Initialize the target action value as the model.
@@ -85,6 +120,7 @@ def train(resume=False, use_ddqn=False, seed=0):
 
     episode_reward = 0
 
+    # Training loop for 4 million steps (can be adjusted as needed)
     for step in range(start_step, 4000000):
 
         action = model.select_action(obs)
@@ -97,6 +133,7 @@ def train(resume=False, use_ddqn=False, seed=0):
 
         obs = next_obs
 
+        # Train the model if the replay buffer has enough samples
         if replay_buffer.size >= 10000:
             # Train the model:x
             (state, next_state, action, rewards, terminal) = replay_buffer.sample(batch_size=config.batch_size)
@@ -150,6 +187,18 @@ def train(resume=False, use_ddqn=False, seed=0):
 
 
 def soft_update(model, target_model, tau=0.005):
+    """
+    Performs a soft update of the target model's parameters towards the policy model's parameters.
+
+    Args:
+        model:          DQN model whose parameters will be used to update the target model
+        target_model:   Target DQN model to be updated
+        tau:            Interpolation parameter for the soft update (0 < tau <= 1)
+    
+    Returns:
+        target_model:   Updated target model with parameters softly updated towards the policy model
+    """
+
     # Perform polyak averaging instead of updating the model every C steps:
     policy_state_dict = model.state_dict()
     target_state_dict = target_model.state_dict()
@@ -165,6 +214,15 @@ def soft_update(model, target_model, tau=0.005):
 
 # Evaluation Template
 def evaluate(model: DQN):  # Pass your trained DQN model
+    """
+    Evaluates the trained DQN model on the Seaquest environment.
+
+    Args:
+        model: Trained DQN model to be evaluated
+
+    Returns:
+        None (prints the average reward over 1000 evaluation episodes)
+    """
     obs, _ = env.reset()
     obs = obs.astype(np.float32) / 255.0
     total_reward = 0
