@@ -41,7 +41,7 @@ def export_plot(ys, ylabel, title, filename):
     plt.close()
 
 
-def save_checkpoint(model, target_model, step, episode_rewards):
+def save_checkpoint(model, target_model, step, episode_rewards, dir):
     """
     Saves checkpoint of the training process for (D)DQN.
 
@@ -50,6 +50,7 @@ def save_checkpoint(model, target_model, step, episode_rewards):
         target_model:       Target DQN model to be saved
         step:               Current training step to be saved
         episode_rewards:    List of episode rewards to be saved
+        dir:                Directory where the checkpoint will be saved
     """
     checkpoint = {
         'model_state_dict': model.state_dict(),
@@ -59,21 +60,22 @@ def save_checkpoint(model, target_model, step, episode_rewards):
         'epsilon': model.epsilon,
         'episode_rewards': episode_rewards,
     }
-    torch.save(checkpoint, os.path.join(output_dir, "checkpoint.pt"))
+    torch.save(checkpoint, os.path.join(dir, "checkpoint.pt"))
 
 
-def load_checkpoint(model, target_model):
+def load_checkpoint(model, target_model, dir):
     """
     Loads checkpoint of the training process for (D)DQN.
 
     Args:
         model:          DQN model to be loaded
         target_model:   Target DQN model to be loaded
+        dir:            Directory where the checkpoint is located
     Returns:
         checkpoint:     Loaded checkpoint dictionary, or None if no checkpoint found
     """
     
-    path = os.path.join(output_dir, "checkpoint.pt")
+    path = os.path.join(dir, "checkpoint.pt")
     if not os.path.exists(path):
         return None
     checkpoint = torch.load(path, map_location=device)
@@ -85,14 +87,16 @@ def load_checkpoint(model, target_model):
 
 
 # Training Loop Template
-def train(resume=False, use_ddqn=False, seed=0):
+def train(n_iters=4000000, resume=False, use_ddqn=False, seed=0, output_dir="results"):
     """
     Training loop for DQN and Double DQN on the Seaquest environment.
 
     Args:
+        n_iters:    Number of training iterations (environment steps) to run
         resume:     Whether to resume training from a checkpoint
         use_ddqn:   Whether to use Double DQN (if False, uses vanilla DQN)
         seed:       Random seed for reproducibility
+        output_dir: Directory where results and checkpoints will be saved
     """
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -121,7 +125,7 @@ def train(resume=False, use_ddqn=False, seed=0):
     episode_reward = 0
 
     # Training loop for 4 million steps (can be adjusted as needed)
-    for step in range(start_step, 4000000):
+    for step in range(start_step, n_iters):
 
         action = model.select_action(obs)
         next_obs, reward, terminated, truncated, _ = env.step(action)
@@ -230,6 +234,7 @@ def evaluate(model: DQN):  # Pass your trained DQN model
     # Trying to set the epsilon to a minimum value to avoid epsilon greedy action
     model.epsilon = 0.0001
 
+    # Run 1000 evaluation episodes and compute the average reward
     for _ in range(1000):
         with torch.no_grad():
             action = model.select_action(obs)
@@ -248,10 +253,12 @@ def evaluate(model: DQN):  # Pass your trained DQN model
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--n_iters", type=int, default=4000000, help="Number of training iterations (environment steps) to run")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument("--ddqn", action="store_true", help="Use Double DQN")
     parser.add_argument("--resume", action="store_true", help="Resume from checkpoint")
+    parser.add_argument("--output_dir", type=str, default="results", help="Directory where results and checkpoints will be saved")
     args = parser.parse_args()
 
-    trained_model = train(resume=args.resume, use_ddqn=args.ddqn, seed=args.seed)
+    trained_model = train(n_iters=args.n_iters, resume=args.resume, use_ddqn=args.ddqn, seed=args.seed)
     evaluate(trained_model)

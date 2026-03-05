@@ -87,13 +87,14 @@ def load_checkpoint(model, target_model):
 
 
 # Training Loop Template
-def train(resume=False, seed=0):
+def train(n_iters=5000000, resume=False, seed=0):
     """
     Training loop for DDQN on the Seaquest environment.
 
     We use DDQN to avoid overestimation bias in the Q-values.
 
     Args:
+        n_iters:    Number of training iterations (environment steps) to run
         resume:     Whether to resume training from a checkpoint
         seed:       Random seed for reproducibility
     """
@@ -126,7 +127,7 @@ def train(resume=False, seed=0):
     episode_reward = 0
 
     # Training loop for 5 million steps (can be adjusted as needed)
-    for step in range(start_step, 5000000):
+    for step in range(start_step, n_iters):
         action = model.select_action(obs, goal=env.normalize_goals(env.desired_goal))
         next_obs, reward, terminated, truncated, reward_her = env.step(action)
         next_obs = next_obs.astype(np.float32) / 255.0
@@ -242,7 +243,7 @@ def evaluate(model: DQN):
     Returns:
         None (prints the average reward over 1000 evaluation episodes)
     """
-    
+
     obs, _ = env.reset()
     obs = obs.astype(np.float32) / 255.0
     total_reward = 0
@@ -271,9 +272,10 @@ def evaluate(model: DQN):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--n_iters", type=int, default=5000000, help="Number of training iterations (environment steps) to run")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument("--resume", action="store_true", help="Resume from checkpoint")
     args = parser.parse_args()
 
-    trained_model = train(resume=args.resume, seed=args.seed)
+    trained_model = train(n_iters=args.n_iters, resume=args.resume, seed=args.seed)
     evaluate(trained_model)

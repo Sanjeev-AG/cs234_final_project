@@ -5,7 +5,7 @@ This file contains the implementation of the DQN algorithm with Hindsight Experi
 import numpy as np
 import torch
 import torch.nn as nn
-from network_utils import build_mlp, device, np2torch
+from network_utils import build_mlp, np2torch
 
 class ReplayBuffer(object):
     """
@@ -51,12 +51,12 @@ class ReplayBuffer(object):
         """
 
         with torch.no_grad():
-            self.state[self.ptr] = torch.as_tensor(state, dtype=torch.float32).to(device)
-            self.next_state[self.ptr] = torch.as_tensor(next_state, dtype=torch.float32).to(device)
-            self.action[self.ptr] = torch.as_tensor(action, dtype=torch.int64).to(device)
-            self.reward[self.ptr] = torch.as_tensor(reward, dtype=torch.float32).to(device)
-            self.done[self.ptr] = torch.as_tensor(done, dtype=torch.uint8).to(device)
-            self.goal[self.ptr] = torch.as_tensor(goal, dtype=torch.float32).to(device)
+            self.state[self.ptr] = torch.as_tensor(state, dtype=torch.float32).to(self.device)
+            self.next_state[self.ptr] = torch.as_tensor(next_state, dtype=torch.float32).to(self.device)
+            self.action[self.ptr] = torch.as_tensor(action, dtype=torch.int64).to(self.device)
+            self.reward[self.ptr] = torch.as_tensor(reward, dtype=torch.float32).to(self.device)
+            self.done[self.ptr] = torch.as_tensor(done, dtype=torch.uint8).to(self.device)
+            self.goal[self.ptr] = torch.as_tensor(goal, dtype=torch.float32).to(self.device)
 
         self.ptr = (self.ptr + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
