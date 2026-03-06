@@ -6,6 +6,7 @@ import argparse
 import gymnasium as gym
 import numpy as np
 import os
+import time
 import torch
 import matplotlib
 matplotlib.use("agg")
@@ -27,6 +28,7 @@ obs_size = env.observation_space.shape[0]  # 128 for RAM [web:16]
 n_actions = env.action_space.n  # 18 for Seaquest [web:7]
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
 output_dir = "results"
 
 
@@ -43,7 +45,7 @@ def export_plot(ys, ylabel, title, filename):
     plt.close()
 
 
-def save_checkpoint(model, target_model, step, episode_rewards):
+def save_checkpoint(model, target_model, step, episode_rewards, dir):
     """
     Saves checkpoint of the training process for (D)DQN.
 
@@ -52,6 +54,7 @@ def save_checkpoint(model, target_model, step, episode_rewards):
         target_model:       Target DQN model to be saved
         step:               Current training step to be saved
         episode_rewards:    List of episode rewards to be saved
+        dir:                Directory where the checkpoint will be saved
     """
     checkpoint = {
         'model_state_dict': model.state_dict(),
@@ -61,21 +64,22 @@ def save_checkpoint(model, target_model, step, episode_rewards):
         'epsilon': model.epsilon,
         'episode_rewards': episode_rewards,
     }
-    torch.save(checkpoint, os.path.join(output_dir, "checkpoint.pt"))
+    torch.save(checkpoint, os.path.join(dir, "checkpoint.pt"))
 
 
-def load_checkpoint(model, target_model):
+def load_checkpoint(model, target_model, dir):
     """
     Loads checkpoint of the training process for (D)DQN.
 
     Args:
         model:          DQN model to be loaded
         target_model:   Target DQN model to be loaded
+        dir:            Directory where the checkpoint is located
     Returns:
         checkpoint:     Loaded checkpoint dictionary, or None if no checkpoint found
     """
 
-    path = os.path.join(output_dir, "checkpoint.pt")
+    path = os.path.join(dir, "checkpoint.pt")
     if not os.path.exists(path):
         return None
     checkpoint = torch.load(path, map_location=device)
@@ -87,7 +91,7 @@ def load_checkpoint(model, target_model):
 
 
 # Training Loop Template
-def train(n_iters=5000000, resume=False, seed=0):
+def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
     """
     Training loop for DDQN on the Seaquest environment.
 
@@ -99,6 +103,8 @@ def train(n_iters=5000000, resume=False, seed=0):
         seed:       Random seed for reproducibility
     """
 
+    np.random.seed(seed)
+    torch.manual_seed(seed)
     obs, _ = env.reset(seed=seed)
     obs = obs.astype(np.float32) / 255.0  # Normalize RAM [0,255] -> [0,1] [web:16]
     time_step = 0
@@ -173,7 +179,9 @@ def train(n_iters=5000000, resume=False, seed=0):
             # If the terminal state still has reward_her set to -1,
             # then we need to update the goal based on the terminal state:
             # Update the replay buffer with N transitions:
+            #print(time_step)
             (state, next_state, action, _, terminal, goal) = replay_buffer.fetch_last_N_samples(time_step)
+            #print(state.shape)
             # Update the goal state:
             replay_buffer.push_batch(state, next_state, action, terminal, obtained_goals)
 
@@ -200,7 +208,7 @@ def train(n_iters=5000000, resume=False, seed=0):
     os.makedirs(output_dir, exist_ok=True)
     np.save(os.path.join(output_dir, "scores.npy"), episode_rewards)
     export_plot(episode_rewards, "Score", "Seaquest DQN", os.path.join(output_dir, "scores.png"))
-    save_checkpoint(model, target_model, step, episode_rewards)
+    save_checkpoint(model, target_model, step, episode_rewards, output_dir)
     print(f"Saved scores.npy, scores.png, and checkpoint to {output_dir}/")
 
     return model
@@ -275,7 +283,15 @@ if __name__ == "__main__":
     parser.add_argument("--n_iters", type=int, default=5000000, help="Number of training iterations (environment steps) to run")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument("--resume", action="store_true", help="Resume from checkpoint")
+    parser.add_argument("--output_dir", type=str, default="results", help="Directory where results and checkpoints will be saved")
     args = parser.parse_args()
 
+    t1 = time.time()
     trained_model = train(n_iters=args.n_iters, resume=args.resume, seed=args.seed)
+    t2 = time.time()
     evaluate(trained_model)
+    #t3 = time.time()
+
+    print(f"Device: {device}")
+    print(f"Training completed in {int((t2 - t1) // 3600)}h:{int((t2 - t1) % 3600 // 60)}m:{int((t2 - t1) % 60)}s")
+    #print(f"Evaluation completed in {int((t3 - t2) // 3600)}h:{int((t3 - t2) % 3600 // 60)}m:{int((t3 - t2) % 60)}s")

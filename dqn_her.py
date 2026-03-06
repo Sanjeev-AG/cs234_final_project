@@ -124,12 +124,10 @@ class ReplayBuffer(object):
 
         # Get the batch size:
         num_samples = state_batch.shape[0]
-        for index in range(num_samples):
+        for index in range(num_samples-2):
 
-                if index == num_samples-1:
-                    continue
-
-                goal_sample_indices = np.random.randint(low=index+1, high=num_samples-1, size=self.num_k)
+                #print(f"Index: {index}, Num Samples: {num_samples}")
+                goal_sample_indices = np.random.randint(low=index+1, high=num_samples, size=self.num_k)
 
                 for goal_idx in goal_sample_indices:
                     success = (obtained_goals[index] >= obtained_goals[goal_idx]).all().item()

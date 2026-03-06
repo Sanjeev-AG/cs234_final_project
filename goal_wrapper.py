@@ -198,7 +198,7 @@ class SeaQWrapper(gym.Wrapper):
         if random.random() >= 0.7:
             num_attackers_to_shoot = random.randint(a=1, b=self.max_num_attackers_to_shoot)
             num_divers_to_collect = random.randint(a=1, b=self.max_divers_to_collect)
-            num_resurfaces = random.randint(a=1, b=self.max_num_surfaced_count)
+            num_resurfaces = 0 if self.max_num_surfaced_count == 0 else random.randint(a=1, b=self.max_num_surfaced_count)
         else:
             num_attackers_to_shoot = self.max_num_attackers_to_shoot
             num_divers_to_collect = self.max_divers_to_collect
@@ -244,14 +244,12 @@ class SeaQWrapper(gym.Wrapper):
         reduced possible goals if logarithmic scaling doesn't work well.
         """
 
-        normalized_goal = torch.zeros([len(self.desired_goal)], dtype=torch.float)
-        max_possible_goals = [
+        max_possible_goals = torch.tensor([
             self.max_possible_num_attackers_to_shoot,
             self.max_possible_num_divers_to_collect,
             self.max_possible_num_surfaced_count
-        ]
-        for i in range(len(goal)):
-            normalized_goal[i] = np.log(1+goal[i])/np.log(1+max_possible_goals[i])
+        ])
+        normalized_goal = torch.log(1+goal)/torch.log(1+max_possible_goals)
 
         return normalized_goal
 

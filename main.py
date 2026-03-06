@@ -6,6 +6,7 @@ import argparse
 import gymnasium as gym
 import numpy as np
 import os
+import time
 import torch
 import matplotlib
 matplotlib.use("agg")
@@ -25,6 +26,7 @@ obs_size = env.observation_space.shape[0]  # 128 for RAM [web:16]
 n_actions = env.action_space.n  # 18 for Seaquest [web:7]
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
 output_dir = "results"
 
 
@@ -103,10 +105,10 @@ def train(n_iters=4000000, resume=False, use_ddqn=False, seed=0, output_dir="res
     obs, _ = env.reset(seed=seed)
     obs = obs.astype(np.float32) / 255.0  # Normalize RAM [0,255] -> [0,1] [web:16]
     config = SeaQuestConfig()
-    model = DQN(env=env, config=config)
+    model = DQN(env=env, config=config).to(device)
 
     # Initialize the target action value as the model.
-    target_model = DQN(env=env, config=config)
+    target_model = DQN(env=env, config=config).to(device)
     target_model.load_state_dict(model.state_dict())
     replay_buffer = ReplayBuffer(state_dim=obs_size, capacity=config.replay_buffer_size, device=device)
 
@@ -184,7 +186,7 @@ def train(n_iters=4000000, resume=False, use_ddqn=False, seed=0, output_dir="res
     os.makedirs(output_dir, exist_ok=True)
     np.save(os.path.join(output_dir, "scores.npy"), episode_rewards)
     export_plot(episode_rewards, "Score", "Seaquest DQN", os.path.join(output_dir, "scores.png"))
-    save_checkpoint(model, target_model, step, episode_rewards)
+    save_checkpoint(model, target_model, step, episode_rewards, output_dir)
     print(f"Saved scores.npy, scores.png, and checkpoint to {output_dir}/")
 
     return model
@@ -260,5 +262,12 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default="results", help="Directory where results and checkpoints will be saved")
     args = parser.parse_args()
 
-    trained_model = train(n_iters=args.n_iters, resume=args.resume, use_ddqn=args.ddqn, seed=args.seed)
+    t1 = time.time()
+    trained_model = train(n_iters=args.n_iters, resume=args.resume, use_ddqn=args.ddqn, seed=args.seed, output_dir=args.output_dir)
+    t2 = time.time()
     evaluate(trained_model)
+    t3 = time.time()
+
+    print(f"Device: {device}")
+    print(f"Training completed in {int((t2 - t1) // 3600)}h:{int((t2 - t1) % 3600 // 60)}s:{int((t2 - t1) % 60)}s")
+    print(f"Evaluation completed in {int((t3 - t2) // 3600)}h:{int((t3 - t2) % 3600 // 60)}s:{int((t3 - t2) % 60)}s")
