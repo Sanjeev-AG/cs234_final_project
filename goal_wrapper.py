@@ -25,7 +25,7 @@ class SeaQWrapper(gym.Wrapper):
     The wrapper also includes functionality to update the desired goals based
     on the agent's performance and to normalize the goals for input to the model.
     """
-    def __init__(self, env):
+    def __init__(self, env, config):
         super(SeaQWrapper, self).__init__(env)
         self.num_goal_dimension = 3
         self.updated_max_goals = False
@@ -48,19 +48,22 @@ class SeaQWrapper(gym.Wrapper):
         self.max_num_surfaced_count = 0
         self.max_num_attackers_to_shoot = 2
         self.max_len_history = 100
+        self.previous_goal = None
 
         self.max_possible_num_attackers_to_shoot = 5000
         self.max_possible_num_divers_to_collect = 600
         self.max_possible_num_surfaced_count = 40
 
-        self.num_attackers_shot_history = deque([0] * self.max_len_history, maxlen=self.max_len_history)
-        self.num_surfaced_count_history = deque([0] * self.max_len_history, maxlen=self.max_len_history)
-        self.num_divers_collected_history = deque([0] * self.max_len_history, maxlen=self.max_len_history)
+        self.num_attackers_shot_history = deque(maxlen=self.max_len_history)
+        self.num_surfaced_count_history = deque(maxlen=self.max_len_history)
+        self.num_divers_collected_history = deque(maxlen=self.max_len_history)
 
         # Define the goal space:
         # Rescuing 6 divers and resurfacing once and killing 10 attackers would amount to 2000 + 200 = 2200 points.
         # So, the goal of HER is to accumulate enough points for learning a policy to maximize the reward.
         self.achieved_goal = self.get_achieved_goal()
+
+        self.config = config
 
     def reset(self, **kwargs):
         """
@@ -82,6 +85,7 @@ class SeaQWrapper(gym.Wrapper):
         self.curr_oxygen_level = 0
         self.prev_num_lives_left = 0
         self.wait_for_oxygen_refill = True
+        self.previous_goal = None
 
         self.achieved_goal = self.get_achieved_goal()
         self.curr_num_lives_left = 3
@@ -144,14 +148,24 @@ class SeaQWrapper(gym.Wrapper):
                 reward = -1
                 break
 
-        return reward
+        prev_goal = self.normalize_goals(self.desired_goal)
+        curr_goal = self.normalize_goals(self.achieved_goal)
+        desired_goal = self.normalize_goals(self.desired_goal)
 
+        # Add potential reward function logic:
+        phi_prev = torch.sum(torch.clamp(prev_goal - desired_goal, 0)).item()
+        phi_curr = torch.sum(torch.clamp(curr_goal - desired_goal, 0)).item()
+
+        potential_reward = np.round(self.config.gamma * phi_curr - phi_prev, decimals=4)
+
+        # As per HER, the reward is set as 0 if the desired goal is satisfied and -1 if the goal is not achieved
+        return reward + potential_reward
 
     def update_objective_values(self, reward, state):
         """
         Updates the values of the three dimensions of the achieved goal based on the reward and state.
         """
-        
+        self.previous_goal = self.get_achieved_goal()
         if reward in [20.0, 30.0]:
             # There are pink attackers worth 30 points and other attackers are 20 points worth
             self.num_attackers_shot += 1
@@ -195,10 +209,10 @@ class SeaQWrapper(gym.Wrapper):
         The goal is sampled randomly from the range of possible goals,
         but can be biased towards higher goals to encourage exploration.
         """
-        if random.random() >= 0.7:
+        if random.random() < 0.7:
             num_attackers_to_shoot = random.randint(a=1, b=self.max_num_attackers_to_shoot)
             num_divers_to_collect = random.randint(a=1, b=self.max_divers_to_collect)
-            num_resurfaces = 0 if self.max_num_surfaced_count == 0 else random.randint(a=1, b=self.max_num_surfaced_count)
+            num_resurfaces = random.randint(a=0, b=self.max_num_surfaced_count)
         else:
             num_attackers_to_shoot = self.max_num_attackers_to_shoot
             num_divers_to_collect = self.max_divers_to_collect
@@ -227,6 +241,10 @@ class SeaQWrapper(gym.Wrapper):
             self.max_divers_to_collect += 1
             self.num_divers_collected_history.clear()
             self.updated_max_goals = True
+
+            # Introduce max num surfaced count after the number divers are equal to 6
+            if self.max_divers_to_collect == 6:
+                self.max_num_surfaced_count = 1
 
         if sum(self.num_surfaced_count_history)/self.max_len_history > 0.8:
             if self.max_num_surfaced_count < self.max_divers_to_collect //6:

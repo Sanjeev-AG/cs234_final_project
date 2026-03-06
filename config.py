@@ -9,7 +9,7 @@ class SeaQuestConfig:
         # model and training config
         self.batch_size = 256  # number of steps used to compute each policy update
         self.lr = 1e-4
-        self.gamma = 0.99  # the discount factor
+        self.gamma = 0.9  # the discount factor
 
         # parameters for the policy and baseline models
         self.n_layers = 2

@@ -21,21 +21,22 @@ class ReplayBuffer(object):
         done:       a boolean indicating whether the episode ended after
                     taking the action at time t
     """
-    def __init__(self, state_dim, goal_dim, capacity, device, num_k=4):
+    def __init__(self, state_dim, goal_dim, capacity, device, config, num_k=4):
         """
         Args:
             state_dim (int):        The dimension of the state space
             goal_dim (int):         The dimension of the goal space
             capacity (int):         The maximum number of transitions to store in the buffer
             device (torch.device):  The device to store the tensors on (CPU or GPU)
+            config:                 Configuration object (used for gamma in reward shaping)
             num_k (int):            The number of HER samples to generate for each transition (default 4)
         """
-
         self.capacity = capacity
         self.device = device
         self.ptr = 0
         self.size = 0
         self.num_k = num_k
+        self.config = config
 
         self.state = torch.zeros((capacity, state_dim), dtype=torch.float32).to(device)
         self.next_state = torch.zeros((capacity, state_dim), dtype=torch.float32).to(device)
@@ -126,12 +127,22 @@ class ReplayBuffer(object):
         num_samples = state_batch.shape[0]
         for index in range(num_samples-2):
 
-                #print(f"Index: {index}, Num Samples: {num_samples}")
-                goal_sample_indices = np.random.randint(low=index+1, high=num_samples, size=self.num_k)
+                goal_sample_indices = np.random.randint(low=index+1, high=num_samples-1, size=self.num_k)
 
                 for goal_idx in goal_sample_indices:
-                    success = (obtained_goals[index] >= obtained_goals[goal_idx]).all().item()
+                    success = (obtained_goals[index+1] >= obtained_goals[goal_idx]).all().item()
                     adjusted_reward = 0.0 if success else -1.0
+
+                    curr_achieved = obtained_goals[index]
+                    next_achieved = obtained_goals[index + 1]
+                    relabeled_goal = obtained_goals[goal_idx]
+
+                    phi_curr = torch.sum(torch.clamp(curr_achieved - relabeled_goal, min=0.0)).item()
+                    phi_next = torch.sum(torch.clamp(next_achieved - relabeled_goal, min=0.0)).item()
+
+                    potential_reward = np.round(self.config.gamma * phi_next - phi_curr, decimals=4)
+
+                    adjusted_reward += potential_reward
 
                     self.push(state_batch[index],
                               action_batch[index],
