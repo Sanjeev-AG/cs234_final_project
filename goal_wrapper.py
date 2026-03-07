@@ -14,9 +14,9 @@ class SeaQWrapper(gym.Wrapper):
     rewards based on the achieved goals. The goal space is defined as a
     3-dimensional vector consisting of:
 
-        1. Number of attackers shot
-        2. Number of divers collected
-        3. Number of times resurfaced
+
+        1. Number of divers collected
+        2. Did the submarine cross the y vector
 
     The reward is computed based on whether the achieved goal meets the desired
     goal. If the achieved goal meets or exceeds the desired goal in all
@@ -27,40 +27,31 @@ class SeaQWrapper(gym.Wrapper):
     """
     def __init__(self, env, config):
         super(SeaQWrapper, self).__init__(env)
-        self.num_goal_dimension = 3
+
+        self.config = config
         self.updated_max_goals = False
+        self.pos_goal_num_divers = 0
+        self.pos_goal_y_vec = 1
+        self.num_goal_dimension = 2
+        self.extra_state_dimension = 2
+
+        self.max_reward = -10
+
 
         # Initializing SeaQuest parameters:
         self.num_divers_collected = 0
-        self.num_divers_lost = 0
-        self._previous_state_num_divers = 0
         self.num_attackers_shot = 0
         self.num_surfaced_count = 0
+        self.submarine_y_vector = 0
+
+        # Internal variables:
         self.curr_num_lives_left = 3 # By default there are 3 lives left.
-
-        self.prev_oxygen_level = 0
-        self.curr_oxygen_level = 0
-        self.prev_num_lives_left = 0
-        self.wait_for_oxygen_refill = True
-
+        self.prev_num_lives_left = self.curr_num_lives_left
+        self._previous_state_num_divers = None
         self.desired_goal = None
-        self.max_divers_to_collect = 1
-        self.max_num_surfaced_count = 0
-        self.max_num_attackers_to_shoot = 2
-        self.max_len_history = 100
-        self.previous_goal = None
-
-        self.max_possible_num_attackers_to_shoot = 5000
-        self.max_possible_num_divers_to_collect = 600
-        self.max_possible_num_surfaced_count = 40
-
-        self.num_attackers_shot_history = deque(maxlen=self.max_len_history)
-        self.num_surfaced_count_history = deque(maxlen=self.max_len_history)
-        self.num_divers_collected_history = deque(maxlen=self.max_len_history)
+        self.max_divers_to_collect: int = 1
 
         # Define the goal space:
-        # Rescuing 6 divers and resurfacing once and killing 10 attackers would amount to 2000 + 200 = 2200 points.
-        # So, the goal of HER is to accumulate enough points for learning a policy to maximize the reward.
         self.achieved_goal = self.get_achieved_goal()
 
         self.config = config
@@ -80,15 +71,14 @@ class SeaQWrapper(gym.Wrapper):
         self.num_divers_collected = 0
         self.num_attackers_shot = 0
         self.num_surfaced_count = 0
+        self.submarine_y_vector = 0
+        self.max_reward = -10
+
         self._previous_state_num_divers = 0
-        self.prev_oxygen_level = 0
-        self.curr_oxygen_level = 0
-        self.prev_num_lives_left = 0
-        self.wait_for_oxygen_refill = True
-        self.previous_goal = None
 
         self.achieved_goal = self.get_achieved_goal()
         self.curr_num_lives_left = 3
+        self.prev_num_lives_left = self.curr_num_lives_left
 
         if "seed" in kwargs:
             np.random.seed(kwargs["seed"])
@@ -107,16 +97,14 @@ class SeaQWrapper(gym.Wrapper):
         """
         Returns values for the three dimensions of the achieved goal.
         """
-        return torch.tensor([self.num_attackers_shot, self.num_divers_collected, self.num_surfaced_count])
+        return torch.tensor([self.num_divers_collected, self.submarine_y_vector])
 
-    def update_history(self):
+    def get_max_reward(self):
         """
-        Updates history to reflect whether the achieved goal meets the desired goal for each dimension.
+        Returns the maximum reward obtained from the environment.
+        :return:
         """
-        self.num_attackers_shot_history.append(self.num_attackers_shot >= self.desired_goal[0])
-        self.num_divers_collected_history.append(self.num_divers_collected >= self.desired_goal[1])
-        self.num_surfaced_count_history.append(self.num_surfaced_count >= self.desired_goal[2])
-
+        return self.max_reward
 
     def step(self, action):
         """
@@ -128,9 +116,13 @@ class SeaQWrapper(gym.Wrapper):
             reward_her: The reward computed based on the achieved goal and desired goal for HER.
         """
         next_obs, reward, terminated, truncated, _ = self.env.step(action)
-
+        if terminated:
+            pass
         self.update_objective_values(reward, next_obs)
         reward_her = self.compute_reward()
+
+        # Modify the observation for the model to work on:
+        next_obs = np.concatenate((next_obs, [self._normalize_state_value(self.num_attackers_shot), self._normalize_state_value(self.num_surfaced_count)]))
 
         return next_obs, reward, terminated, truncated, reward_her
 
@@ -142,30 +134,28 @@ class SeaQWrapper(gym.Wrapper):
         all dimensions) and -1 otherwise.
         """
         self.achieved_goal = self.get_achieved_goal()
-        reward = 0
-        for idx, goal in enumerate(self.desired_goal):
-            if self.achieved_goal[idx] < goal:
-                reward = -1
-                break
+        desired_goal = self.desired_goal
 
-        prev_goal = self.normalize_goals(self.desired_goal)
-        curr_goal = self.normalize_goals(self.achieved_goal)
-        desired_goal = self.normalize_goals(self.desired_goal)
+        desired_num_divers = desired_goal[self.pos_goal_num_divers]
+        desired_y_vec = desired_goal[self.pos_goal_y_vec]
 
-        # Add potential reward function logic:
-        phi_prev = torch.sum(torch.clamp(prev_goal - desired_goal, 0)).item()
-        phi_curr = torch.sum(torch.clamp(curr_goal - desired_goal, 0)).item()
+        if self.num_divers_collected >= desired_num_divers and abs(self.submarine_y_vector - desired_y_vec) < self.config.allowable_range_y_vec:
+            reward = 0
+        else:
+            reward = -1
 
-        potential_reward = np.round(self.config.gamma * phi_curr - phi_prev, decimals=4)
+        # Adding the number of attackers as a smaller reward
+        reward += self.config.attackers_weight * self.num_attackers_shot
 
-        # As per HER, the reward is set as 0 if the desired goal is satisfied and -1 if the goal is not achieved
-        return reward + potential_reward
+        if reward > self.max_reward:
+            self.max_reward = reward
+
+        return reward
 
     def update_objective_values(self, reward, state):
         """
         Updates the values of the three dimensions of the achieved goal based on the reward and state.
         """
-        self.previous_goal = self.get_achieved_goal()
         if reward in [20.0, 30.0]:
             # There are pink attackers worth 30 points and other attackers are 20 points worth
             self.num_attackers_shot += 1
@@ -177,31 +167,13 @@ class SeaQWrapper(gym.Wrapper):
         # Each time it resurfaces, the oxygen meter increases to 64.
         # self.curr_oxygen_level = state[102]
         self.curr_num_lives_left = state[59]
-        
-        """
-        if self.prev_num_lives_left > self.curr_num_lives_left:
-            self.wait_for_oxygen_refill = True
-        
-        if self.curr_oxygen_level > self.prev_oxygen_level and not self.wait_for_oxygen_refill:
-            self.num_surfaced_count += 1
-            self.wait_for_oxygen_refill = True
-
-        if self.curr_oxygen_level == 64:
-            self.wait_for_oxygen_refill = False
-
-        self.prev_oxygen_level = self.curr_oxygen_level
-        """
-
         if state[62] == 0 and self._previous_state_num_divers == 6 and self.curr_num_lives_left == self.prev_num_lives_left:
             # These conditions would mean the submarine has resurfaced with 6 divers.
             self.num_surfaced_count += 1
-
         self.prev_num_lives_left = self.curr_num_lives_left
 
-        if state[62] > self._previous_state_num_divers:
-            self.num_divers_collected += (state[62] - self._previous_state_num_divers)
-
-        self._previous_state_num_divers = state[62]
+        self.num_divers_collected = self.normalize_divers(state[62])
+        self.submarine_y_vector = self._normalize_state_value(state[97])
 
     def sample_goal(self):
         """
@@ -210,15 +182,14 @@ class SeaQWrapper(gym.Wrapper):
         but can be biased towards higher goals to encourage exploration.
         """
         if random.random() < 0.7:
-            num_attackers_to_shoot = random.randint(a=1, b=self.max_num_attackers_to_shoot)
-            num_divers_to_collect = random.randint(a=1, b=self.max_divers_to_collect)
-            num_resurfaces = random.randint(a=0, b=self.max_num_surfaced_count)
+            num_divers_to_collect = self.normalize_divers(random.randint(a=1, b=self.max_divers_to_collect))
+            y_vector = self._normalize_state_value(random.randint(a = 13, b=20))
         else:
-            num_attackers_to_shoot = self.max_num_attackers_to_shoot
-            num_divers_to_collect = self.max_divers_to_collect
-            num_resurfaces = self.max_num_surfaced_count
+            num_divers_to_collect = self.normalize_divers(self.max_divers_to_collect)
+            y_vector = self._normalize_state_value(13)
 
-        self.desired_goal = torch.tensor([num_attackers_to_shoot, num_divers_to_collect, num_resurfaces])
+
+        self.desired_goal = torch.tensor([num_divers_to_collect, y_vector])
 
     def update_max_goals(self):
         """
@@ -229,51 +200,16 @@ class SeaQWrapper(gym.Wrapper):
         recent episodes, we can increase the maximum goals for that dimension
         to encourage further learning and exploration.
         """
-        self.updated_max_goals = False
-        if sum(self.num_attackers_shot_history)/self.max_len_history > 0.8:
-            # Increase by 5 if the achieved goal exceeds by 90%
-            self.max_num_attackers_to_shoot += 1
-            self.num_attackers_shot_history.clear()
-            self.updated_max_goals = True
 
-        if sum(self.num_divers_collected_history)/self.max_len_history > 0.8:
-            # Increment by 2 divers to collect if the achieved goal exceeds by 90%
-            self.max_divers_to_collect += 1
-            self.num_divers_collected_history.clear()
-            self.updated_max_goals = True
-
-            # Introduce max num surfaced count after the number divers are equal to 6
-            if self.max_divers_to_collect == 6:
-                self.max_num_surfaced_count = 1
-
-        if sum(self.num_surfaced_count_history)/self.max_len_history > 0.8:
-            if self.max_num_surfaced_count < self.max_divers_to_collect //6:
-                self.max_num_surfaced_count += 1
-                self.num_surfaced_count_history.clear()
-                self.updated_max_goals = True
-
-    def normalize_goals(self, goal):
-        """
-        Normalizes the goals in each dimension to ensure they are between 0 and
-        1. This helps with training stability and convergence.
-        
-        The normalization is done using logarithmic scaling to handle the wide
-        range of possible goal values. We can also try linear scaling with
-        reduced possible goals if logarithmic scaling doesn't work well.
-        """
-
-        max_possible_goals = torch.tensor([
-            self.max_possible_num_attackers_to_shoot,
-            self.max_possible_num_divers_to_collect,
-            self.max_possible_num_surfaced_count
-        ])
-        normalized_goal = torch.log(1+goal)/torch.log(1+max_possible_goals)
-
-        return normalized_goal
+        # Increment by 2 divers to collect if the achieved goal exceeds by 90%
+        self.max_divers_to_collect += 1
 
 
+    def normalize_divers(self, num_divers):
+        return round(num_divers / self.config.max_divers_rescuable, 4)
 
-
+    def _normalize_state_value(self, state_val):
+        return round(state_val / self.config.max_state_value, 4)
 
 
 

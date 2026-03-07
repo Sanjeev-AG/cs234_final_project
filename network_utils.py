@@ -21,17 +21,19 @@ def build_mlp(input_size, output_size, n_layers, size):
         input_size (int):   Dimension of inputs to be given to the network
         output_size (int):  The dimension of the output
         n_layers (int):     The number of hidden layers of the network
-        size (int):         The size of each hidden layer
+        size list(int):         The size of each hidden layer
     Returns:
         An instance of (a subclass of) nn.Module representing the network.
     """
 
-    model = nn.Sequential(nn.Linear(in_features=input_size, out_features=size), nn.ReLU())
-    for i in range(n_layers-1):
-        model.append(nn.Linear(in_features=size, out_features=size))
+    assert n_layers > 1, "The number of hidden layers should be atleast greater than 1"
+    assert len(size) == n_layers, "The size array does not match the number of layers"
+
+    model = nn.Sequential(nn.Linear(in_features=input_size, out_features=size[0]), nn.ReLU())
+    for i in range(1, n_layers):
+        model.append(nn.Linear(in_features=size[i-1], out_features=size[i]))
         model.append(nn.ReLU())
-    model.append(nn.Linear(in_features=size, out_features=output_size))
-    # model.append(nn.Softmax())
+    model.append(nn.Linear(in_features=size[-1], out_features=output_size))
 
     return model
 

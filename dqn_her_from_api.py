@@ -8,6 +8,8 @@ import ale_py
 import torch
 import argparse
 
+gym.register_envs(ale_py)
+
 
 class EpisodeRewardCallback(BaseCallback):
     """Prints the reward at the end of each training episode."""

@@ -22,7 +22,7 @@ gym.register_envs(ale_py)
 # Environment Setup
 env_name = "ALE/Seaquest-v5"  # RAM observation, no sticky actions [web:5]
 env = gym.make(env_name, render_mode=None, obs_type="ram")
-env = SeaQWrapper(env, SeqQuestConfig())
+env = SeaQWrapper(env, SeaQuestConfig())
 
 obs_size = env.observation_space.shape[0]  # 128 for RAM [web:16]
 n_actions = env.action_space.n  # 18 for Seaquest [web:7]
@@ -103,19 +103,25 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
         seed:       Random seed for reproducibility
     """
 
+    def reset_env(env):
+        obs, _ = env.reset(seed=seed)
+        obs = obs.astype(np.float32) / 255.0  # Normalize RAM [0,255] -> [0,1] [web:16]
+        obs = np.concatenate((obs, [0, 0]))
+
+        return obs
+
     np.random.seed(seed)
     torch.manual_seed(seed)
-    obs, _ = env.reset(seed=seed)
-    obs = obs.astype(np.float32) / 255.0  # Normalize RAM [0,255] -> [0,1] [web:16]
+
     time_step = 0
     config = SeaQuestConfig()
     model = DQN(env=env, config=config)
     obtained_goals = []
-
+    obs = reset_env(env)
     # Initialize the target action value as the model.
     target_model = DQN(env=env, config=config)
     target_model.load_state_dict(model.state_dict())
-    replay_buffer = ReplayBuffer(state_dim=obs_size, capacity=config.replay_buffer_size, device=device, goal_dim=env.num_goal_dimension, config=config)
+    replay_buffer = ReplayBuffer(state_dim=obs_size + env.extra_state_dimension, capacity=config.replay_buffer_size, device=device, goal_dim=env.num_goal_dimension, config=config)
 
     start_step = 0
     episode_rewards = []
@@ -134,13 +140,13 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
 
     # Training loop for 5 million steps (can be adjusted as needed)
     for step in range(start_step, n_iters):
-        action = model.select_action(obs, goal=env.normalize_goals(env.desired_goal))
+        action = model.select_action(obs, goal=env.desired_goal)
         next_obs, reward, terminated, truncated, reward_her = env.step(action)
         next_obs = next_obs.astype(np.float32) / 255.0
         done = terminated or truncated
-        obtained_goals.append(env.normalize_goals(env.get_achieved_goal()))
+        obtained_goals.append(env.get_achieved_goal())
 
-        replay_buffer.push(obs, action, reward_her, next_obs, done, env.normalize_goals(env.desired_goal))
+        replay_buffer.push(obs, action, reward_her, next_obs, done, env.desired_goal)
         time_step += 1 # Update the number of timesteps in the episodes
 
         episode_reward += reward
@@ -154,15 +160,15 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
             with torch.no_grad():
                 # Get the max Q values for the next state:
                 # Applying Double DQN to avoid overestimation bias to be propagated.
-                next_state_Q = model.forward(next_state, goal=goal)
-                target_next_state_Q = target_model.forward(next_state, goal=goal)
-                max_action = next_state_Q.max(dim=1).indices
+                next_state_q = model.forward(next_state, goal=goal)
+                target_next_state_q = target_model.forward(next_state, goal=goal)
+                max_action = next_state_q.max(dim=1).indices
                 max_action = max_action.reshape((max_action.shape[0], 1))
-                max_Q = torch.gather(target_next_state_Q, dim=1, index=max_action)
+                max_Q = torch.gather(target_next_state_q, dim=1, index=max_action)
 
             # Get the obtained Q for the action:
-            obtained_Q = model.forward(state, goal=goal)
-            q_action = torch.gather(obtained_Q, dim=1, index=action)
+            obtained_q = model.forward(state, goal=goal)
+            q_action = torch.gather(obtained_q, dim=1, index=action)
             td_target = rewards + (config.gamma * max_Q * (1 - terminal.float()))
 
             # Compute the loss function:
@@ -170,11 +176,12 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
 
         if done:
             episode_rewards.append(episode_reward)
-            env.update_history()
 
             print(f"Episode {len(episode_rewards)}, Reward: {episode_reward}, Steps: {step},"
-                  f"Achieved goal: {env.get_achieved_goal()}, Desired goal: {env.desired_goal}, reward_her: {reward_her}")
+                  f"Max reward in the episode: {env.get_max_reward()}, Desired goal: {env.desired_goal}")
 
+            if len(episode_rewards) % config.target_update_frequency == 0:
+                env.update_max_goals()
 
             # If the terminal state still has reward_her set to -1,
             # then we need to update the goal based on the terminal state:
@@ -189,22 +196,20 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
             time_step = 0
             episode_reward = 0
             obtained_goals = []
-            obs, _ = env.reset()
-            if env.updated_max_goals:
-                model.epsilon = max(model.epsilon, 0.15) # Restart the exploration phase to learn a new goal
-            obs = obs.astype(np.float32) / 255.0
+            obs = reset_env(env)
 
             # Exponential decay of epsilon value:
-            # model.epsilon = max(1.0 - step / 1_000_000, 0.05)
-            model.epsilon = max(0.05, model.epsilon * 0.9997)
+            model.epsilon = max(1.0 - step / 1_000_000, 0.1)
+            # model.epsilon = max(0.05, model.epsilon * 0.9997)
+
 
         # Update the target model:
         # target_model = soft_update(model, target_model, tau=config.tau_weight)
         if step % config.target_update_frequency == 0:
             target_model.load_state_dict(model.state_dict())
 
-        if len(episode_rewards) % 500 == 0:
-            save_checkpoint(model, target_model, step, episode_rewards)
+        # if len(episode_rewards) % 500 == 0:
+        #     save_checkpoint(model, target_model, step, episode_rewards)
 
 
     # Save scores, plot, and model checkpoint

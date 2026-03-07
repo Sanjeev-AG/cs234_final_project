@@ -168,7 +168,7 @@ class DQN(nn.Module):
         """
         Args:
             env (gym.Env):              OpenAI gym environment
-            hidden_layer_size (int):    Size of the hidden layer
+            hidden_layer_size list(int):    Size of the hidden layer
             n_layers (int):             Number of layers
             lr (float):                 Learning rate
             gamma (float):              Discount factor
@@ -180,6 +180,9 @@ class DQN(nn.Module):
         observation_dim = self.env.observation_space.shape[0]
         if hasattr(env, 'num_goal_dimension'):
             observation_dim+=env.num_goal_dimension
+        if hasattr(env, 'extra_state_dimension'):
+            observation_dim+=env.extra_state_dimension
+
         self.network = build_mlp(input_size=observation_dim, output_size=env.action_space.n,
                                  size=config.layer_size,
                                  n_layers=config.n_layers)
@@ -199,7 +202,10 @@ class DQN(nn.Module):
             obs = np2torch(obs)
         goal = goal.to(obs.device).float()
         obs = torch.cat((obs, goal), dim=-1)
-        output = self.network.forward(obs.float()).squeeze()
+        try:
+            output = self.network.forward(obs.float()).squeeze()
+        except:
+            pass
         return output
 
     def compute_loss(self, obtained_Q, target_Q):
