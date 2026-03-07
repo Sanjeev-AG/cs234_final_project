@@ -107,7 +107,7 @@ class ReplayBuffer(object):
             Transitions corresponding to the last N indices
         """
 
-        indices = np.arange(self.size-N, self.size) % self.capacity
+        indices = np.arange(self.ptr - N, self.ptr) % self.capacity
         return self._fetch_indices(indices)
 
     def push_batch(self, state_batch, next_state_batch, action_batch, done_batch, obtained_goals):
@@ -130,23 +130,26 @@ class ReplayBuffer(object):
                 goal_sample_indices = np.random.randint(low=index+1, high=num_samples-1, size=self.num_k)
 
                 for goal_idx in goal_sample_indices:
-                    success = (obtained_goals[index+1] >= obtained_goals[goal_idx]).all().item()
-                    adjusted_reward = 0.0 if success else -1.0
 
-                    curr_achieved = obtained_goals[index]
-                    next_achieved = obtained_goals[index + 1]
-                    relabeled_goal = obtained_goals[goal_idx]
+                    desired_goal = obtained_goals[goal_idx]
+                    desired_num_divers = desired_goal[0]
+                    desired_y_vec = desired_goal[1]
+                    obtained_num_divers = obtained_goals[index+1][0]
+                    obtained_y_vec = obtained_goals[index+1][1]
 
-                    phi_curr = torch.sum(torch.clamp(curr_achieved - relabeled_goal, min=0.0)).item()
-                    phi_next = torch.sum(torch.clamp(next_achieved - relabeled_goal, min=0.0)).item()
+                    if obtained_num_divers >= desired_num_divers and abs(obtained_y_vec - desired_y_vec) < self.config.allowable_range_y_vec:
+                        reward = 0
+                    else:
+                        reward = -1
 
-                    potential_reward = np.round(self.config.gamma * phi_next - phi_curr, decimals=4)
-
-                    adjusted_reward += potential_reward
+                    # Add any at attackers shot reward as well:
+                    # Denormalizing the number of attackers shot
+                    num_attackers_shot = (state_batch[index+1][-2] - state_batch[index][-2]) * self.config.max_state_value
+                    reward += num_attackers_shot * self.config.attackers_weight
 
                     self.push(state_batch[index],
                               action_batch[index],
-                              adjusted_reward,
+                              reward,
                               next_state_batch[index],
                               done_batch[index],
                               obtained_goals[goal_idx])
@@ -239,4 +242,5 @@ class DQN(nn.Module):
 
         with torch.no_grad():  # Don't track gradients during action selection
             output = self.forward(in_state, goal)
+            print(f"output: {output}")
             return torch.argmax(output).item()

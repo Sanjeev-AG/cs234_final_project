@@ -120,7 +120,7 @@ class SeaQWrapper(gym.Wrapper):
         reward_her = self.compute_reward()
 
         # Modify the observation for the model to work on:
-        next_obs = np.concatenate((next_obs, [self._normalize_state_value(self.num_attackers_shot), self._normalize_state_value(self.num_surfaced_count)]))
+        next_obs = np.concatenate((next_obs, [self.num_attackers_shot, self.num_surfaced_count]))
 
         return next_obs, reward, terminated, truncated, reward_her
 
@@ -172,6 +172,8 @@ class SeaQWrapper(gym.Wrapper):
             self.num_surfaced_count += 1
         self.prev_num_lives_left = self.curr_num_lives_left
 
+        self._previous_state_num_divers = state[62]
+
         self.num_divers_collected = self.normalize_divers(state[62])
         self.submarine_y_vector = self._normalize_state_value(state[97])
 
@@ -181,7 +183,7 @@ class SeaQWrapper(gym.Wrapper):
         The goal is sampled randomly from the range of possible goals,
         but can be biased towards higher goals to encourage exploration.
         """
-        if random.random() < 0.7:
+        if random.random() > 0.7:
             num_divers_to_collect = self.normalize_divers(random.randint(a=1, b=self.max_divers_to_collect))
             y_vector = self._normalize_state_value(random.randint(a = 13, b=20))
         else:
@@ -202,7 +204,7 @@ class SeaQWrapper(gym.Wrapper):
         """
 
         # Increment by 2 divers to collect if the achieved goal exceeds by 90%
-        if self.max_divers_to_collect <= self.config.max_divers_rescuable:
+        if self.max_divers_to_collect < self.config.max_divers_rescuable:
             self.max_divers_to_collect += 1
 
 

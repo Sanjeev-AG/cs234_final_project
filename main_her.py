@@ -105,8 +105,8 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
 
     def reset_env(env):
         obs, _ = env.reset(seed=seed)
-        obs = obs.astype(np.float32) / 255.0  # Normalize RAM [0,255] -> [0,1] [web:16]
         obs = np.concatenate((obs, [0, 0]))
+        obs = obs.astype(np.float32) / 255.0  # Normalize RAM [0,255] -> [0,1] [web:16]
 
         return obs
 
@@ -187,7 +187,7 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
             # then we need to update the goal based on the terminal state:
             # Update the replay buffer with N transitions:
             #print(time_step)
-            (state, next_state, action, _, terminal, goal) = replay_buffer.fetch_last_N_samples(time_step)
+            (state, next_state, action, rewards_her, terminal, goal) = replay_buffer.fetch_last_N_samples(time_step)
             #print(state.shape)
             # Update the goal state:
             replay_buffer.push_batch(state, next_state, action, terminal, obtained_goals)
@@ -261,18 +261,19 @@ def evaluate(model: DQN):
     """
 
     obs, _ = env.reset()
+    obs = np.concatenate((obs, [0, 0]))
     obs = obs.astype(np.float32) / 255.0
     total_reward = 0
 
-    # Set an extremely high goal during evaluation
-    env.desired_goal = torch.tensor([5000, 480, 60])
+    # Set an extremely high goal during evaluation (max divers normalized, high y-vector normalized)
+    env.desired_goal = torch.tensor([env.normalize_divers(6), env._normalize_state_value(13)])
 
     # Trying to set the epsilon to a minimum value to avoid epsilon greedy action
     model.epsilon = 0.0001
 
     for _ in range(1000):
         with torch.no_grad():
-            action = model.select_action(obs, goal=env.normalize_goals(env.desired_goal))
+            action = model.select_action(obs, goal=env.desired_goal)
 
         obs, reward, terminated, truncated, _ = env.step(action)
         obs = obs.astype(np.float32) / 255.0
@@ -280,6 +281,7 @@ def evaluate(model: DQN):
 
         if terminated or truncated:
             obs, _ = env.reset()
+            obs = np.concatenate((obs, [0, 0]))
             obs = obs.astype(np.float32) / 255.0
 
     print(f"Average reward: {total_reward / 1000:.2f}")
