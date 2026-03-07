@@ -180,7 +180,7 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
             print(f"Episode {len(episode_rewards)}, Reward: {episode_reward}, Steps: {step},"
                   f"Max reward in the episode: {env.get_max_reward()}, Desired goal: {env.desired_goal}")
 
-            if len(episode_rewards) % config.target_update_frequency == 0:
+            if len(episode_rewards) % config.goal_update_frequency == 0:
                 env.update_max_goals()
 
             # If the terminal state still has reward_her set to -1,

@@ -43,6 +43,7 @@ class SeaQWrapper(gym.Wrapper):
         self.num_attackers_shot = 0
         self.num_surfaced_count = 0
         self.submarine_y_vector = 0
+        self.prev_num_attackers_shot = self.num_attackers_shot
 
         # Internal variables:
         self.curr_num_lives_left = 3 # By default there are 3 lives left.
@@ -73,6 +74,7 @@ class SeaQWrapper(gym.Wrapper):
         self.num_surfaced_count = 0
         self.submarine_y_vector = 0
         self.max_reward = -10
+        self.prev_num_attackers_shot = self.num_attackers_shot
 
         self._previous_state_num_divers = 0
 
@@ -84,8 +86,6 @@ class SeaQWrapper(gym.Wrapper):
             np.random.seed(kwargs["seed"])
             torch.manual_seed(kwargs["seed"])
 
-        # Update the max goal if required:
-        self.update_max_goals()
 
         # Sample a goal from the set of goals for the Hindsight replay:
         self.sample_goal()
@@ -116,8 +116,6 @@ class SeaQWrapper(gym.Wrapper):
             reward_her: The reward computed based on the achieved goal and desired goal for HER.
         """
         next_obs, reward, terminated, truncated, _ = self.env.step(action)
-        if terminated:
-            pass
         self.update_objective_values(reward, next_obs)
         reward_her = self.compute_reward()
 
@@ -145,7 +143,9 @@ class SeaQWrapper(gym.Wrapper):
             reward = -1
 
         # Adding the number of attackers as a smaller reward
-        reward += self.config.attackers_weight * self.num_attackers_shot
+        reward += self.config.attackers_weight * (self.num_attackers_shot - self.prev_num_attackers_shot)
+
+        self.prev_num_attackers_shot = self.num_attackers_shot
 
         if reward > self.max_reward:
             self.max_reward = reward
@@ -202,7 +202,8 @@ class SeaQWrapper(gym.Wrapper):
         """
 
         # Increment by 2 divers to collect if the achieved goal exceeds by 90%
-        self.max_divers_to_collect += 1
+        if self.max_divers_to_collect <= self.config.max_divers_rescuable:
+            self.max_divers_to_collect += 1
 
 
     def normalize_divers(self, num_divers):

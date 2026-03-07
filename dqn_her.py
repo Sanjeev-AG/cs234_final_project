@@ -202,10 +202,7 @@ class DQN(nn.Module):
             obs = np2torch(obs)
         goal = goal.to(obs.device).float()
         obs = torch.cat((obs, goal), dim=-1)
-        try:
-            output = self.network.forward(obs.float()).squeeze()
-        except:
-            pass
+        output = self.network.forward(obs.float()).squeeze()
         return output
 
     def compute_loss(self, obtained_Q, target_Q):
