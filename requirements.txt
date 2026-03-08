@@ -1,11 +1,9 @@
-gymnasium[mujoco]==0.29.1
-gymnasium[atari]==0.29.1
-gymnasium[accept-rom-license]==0.29.1
-stable-baselines3==2.3.0
-#numpy
+gymnasium[mujoco]==1.2.3
+gymnasium[atari]==1.2.3
+ale-py==0.11.2
+stable-baselines3==2.7.1
 numpy<2.0
-#torch==2.6.0
-torch==2.2.2
+torch==2.10.0
 matplotlib
 scipy
 tqdm

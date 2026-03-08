@@ -107,49 +107,76 @@ class ReplayBuffer(object):
             Transitions corresponding to the last N indices
         """
 
-        indices = np.arange(self.size-N, self.size) % self.capacity
+        indices = np.arange(self.ptr - N, self.ptr) % self.capacity
         return self._fetch_indices(indices)
 
-    def push_batch(self, state_batch, next_state_batch, action_batch, done_batch, obtained_goals):
+    def push_batch(self, state_batch, next_state_batch, action_batch, original_rewards_batch, done_batch,
+                   obtained_goals, y_vectors_batch):
         """
         Push a batch of transitions into the replay buffer, and also generate
         HER samples for each transition in the batch.
-
-        Args:
-            state_batch:        torch.Tensor of shape [batch_size, state_dim]
-            next_state_batch:   torch.Tensor of shape [batch_size, state_dim]
-            action_batch:       torch.Tensor of shape [batch_size, 1]
-            done_batch:         torch.Tensor of shape [batch_size, 1]
-            obtained_goals:     torch.Tensor of shape [batch_size, goal_dim]
         """
-
-        # Get the batch size:
         num_samples = state_batch.shape[0]
-        for index in range(num_samples-2):
 
-                goal_sample_indices = np.random.randint(low=index+1, high=num_samples-1, size=self.num_k)
+        for index in range(num_samples - 2):
 
-                for goal_idx in goal_sample_indices:
-                    success = (obtained_goals[index+1] >= obtained_goals[goal_idx]).all().item()
-                    adjusted_reward = 0.0 if success else -1.0
+            # --- EXTRACT COMBAT SHAPING REWARD ---
+            # We look at the original reward the agent got on this step.
+            # Example 1: Agent fired blindly and missed. original_reward = -1.05
+            # Example 2: Agent hit an enemy. original_reward = -0.9
+            original_reward = original_rewards_batch[index].item()
 
-                    curr_achieved = obtained_goals[index]
-                    next_achieved = obtained_goals[index + 1]
-                    relabeled_goal = obtained_goals[goal_idx]
+            # If the original_reward is greater than -0.5, the agent must have
+            # achieved the original goal (base reward 0.0).
+            # Otherwise, the base reward was -1.0.
+            if original_reward > 45:
+                base_original = 50
+            else:
+                base_original = 0
 
-                    phi_curr = torch.sum(torch.clamp(curr_achieved - relabeled_goal, min=0.0)).item()
-                    phi_next = torch.sum(torch.clamp(next_achieved - relabeled_goal, min=0.0)).item()
+            # The "combat_shaping" is the extra penalty/bonus from shooting.
+            # In Example 1: -1.05 - (-1.0) = -0.05 (Blind fire penalty)
+            # In Example 2: -0.9 - (-1.0) = +0.10 (Enemy hit bonus)
+            combat_shaping = original_reward - base_original
+            # ---------------------------------------
 
-                    potential_reward = np.round(self.config.gamma * phi_next - phi_curr, decimals=4)
+            # Sample future states to use as fake HER goals
+            goal_sample_indices = np.random.randint(low=index + 1, high=num_samples - 1, size=self.num_k)
 
-                    adjusted_reward += potential_reward
+            for goal_idx in goal_sample_indices:
+                # 1. Extract the conditions of the future state we are pretending was the goal
+                desired_num_divers = obtained_goals[goal_idx][0]
+                desired_oxy_bucket = obtained_goals[goal_idx][1]
+                desired_y_vec = y_vectors_batch[goal_idx]  # NEW: The depth of the future state
 
-                    self.push(state_batch[index],
-                              action_batch[index],
-                              adjusted_reward,
-                              next_state_batch[index],
-                              done_batch[index],
-                              obtained_goals[goal_idx])
+                # 2. Extract the conditions of the step we are evaluating
+                obtained_num_divers = obtained_goals[index + 1][0]
+                obtained_oxy_bucket = obtained_goals[index + 1][1]
+                obtained_y_vec = y_vectors_batch[index + 1]
+
+                # 3. HER Goal Logic
+                divers_ok = obtained_num_divers >= (desired_num_divers * 0.99)
+                oxy_ok = abs(obtained_oxy_bucket - desired_oxy_bucket) < 0.1
+
+                # NEW: Did the submarine reach the specific depth of the synthetic goal?
+                # We allow a small margin of error (e.g., 5 RAM units)
+                depth_ok = abs(obtained_y_vec - desired_y_vec) < (5 / self.config.max_state_value)
+
+                # If it achieved the divers, oxygen, AND depth of the future state, it's a success!
+                if divers_ok and oxy_ok and depth_ok and obtained_num_divers > 0:
+                    new_base_reward = 50
+                else:
+                    new_base_reward = 0
+
+                # Re-apply the combat shaping
+                final_her_reward = new_base_reward + combat_shaping
+
+                self.push(state_batch[index],
+                          action_batch[index],
+                          final_her_reward,
+                          next_state_batch[index],
+                          done_batch[index],
+                          obtained_goals[goal_idx])
 
     def update_last_index_reward(self):
         """
@@ -161,14 +188,14 @@ class ReplayBuffer(object):
 
 class DQN(nn.Module):
     """
-    Implementation of the DQN algorithm, including the replay buffer.
+        Implementation of the DQN algorithm, including the replay buffer.
     """
 
     def __init__(self, env, config):
         """
         Args:
             env (gym.Env):              OpenAI gym environment
-            hidden_layer_size (int):    Size of the hidden layer
+            hidden_layer_size list(int):    Size of the hidden layer
             n_layers (int):             Number of layers
             lr (float):                 Learning rate
             gamma (float):              Discount factor
@@ -177,9 +204,13 @@ class DQN(nn.Module):
         self.env = env
         self.lr = config.lr
         self.gamma = config.gamma
-        observation_dim = self.env.observation_space.shape[0]
+        if config.stack_size > 0:
+            observation_dim = self.env.observation_space.shape[-1] * config.stack_size
+        else:
+            observation_dim = self.env.observation_space.shape[0]
         if hasattr(env, 'num_goal_dimension'):
             observation_dim+=env.num_goal_dimension
+
         self.network = build_mlp(input_size=observation_dim, output_size=env.action_space.n,
                                  size=config.layer_size,
                                  n_layers=config.n_layers)
