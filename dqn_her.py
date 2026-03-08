@@ -110,49 +110,54 @@ class ReplayBuffer(object):
         indices = np.arange(self.ptr - N, self.ptr) % self.capacity
         return self._fetch_indices(indices)
 
-    def push_batch(self, state_batch, next_state_batch, action_batch, done_batch, obtained_goals):
+    def push_batch(self, state_batch, next_state_batch, action_batch, done_batch, obtained_goals, y_vectors_batch):
         """
         Push a batch of transitions into the replay buffer, and also generate
         HER samples for each transition in the batch.
 
-        Args:
-            state_batch:        torch.Tensor of shape [batch_size, state_dim]
-            next_state_batch:   torch.Tensor of shape [batch_size, state_dim]
-            action_batch:       torch.Tensor of shape [batch_size, 1]
-            done_batch:         torch.Tensor of shape [batch_size, 1]
-            obtained_goals:     torch.Tensor of shape [batch_size, goal_dim]
+        *NOTE: You must pass `y_vectors_batch` into this function from main_her.py
+        so we know if the submarine was at the surface!*
         """
-
-        # Get the batch size:
         num_samples = state_batch.shape[0]
-        for index in range(num_samples-2):
 
-                goal_sample_indices = np.random.randint(low=index+1, high=num_samples-1, size=self.num_k)
+        for index in range(num_samples - 2):
 
-                for goal_idx in goal_sample_indices:
+            # Standard HER: Sample goals from future states in the same episode
+            goal_sample_indices = np.random.randint(low=index + 1, high=num_samples - 1, size=self.num_k)
 
-                    desired_goal = obtained_goals[goal_idx]
-                    desired_num_divers = desired_goal[0]
-                    desired_y_vec = desired_goal[1]
-                    obtained_num_divers = obtained_goals[index+1][0]
-                    obtained_y_vec = obtained_goals[index+1][1]
+            for goal_idx in goal_sample_indices:
+                # The relabeled goal is whatever divers and oxygen bucket we had at `goal_idx`
+                desired_num_divers = obtained_goals[goal_idx][0]
+                desired_oxy_bucket = obtained_goals[goal_idx][1]
 
-                    if obtained_num_divers >= desired_num_divers and abs(obtained_y_vec - desired_y_vec) < self.config.allowable_range_y_vec:
-                        reward = 0
-                    else:
-                        reward = -1
+                # Did we achieve this goal on step `index+1`?
+                obtained_num_divers = obtained_goals[index + 1][0]
+                obtained_oxy_bucket = obtained_goals[index + 1][1]
+                obtained_y_vec = y_vectors_batch[index + 1]  # Y-coord of the submarine at step index+1
 
-                    # Add any at attackers shot reward as well:
-                    # Denormalizing the number of attackers shot
-                    num_attackers_shot = (state_batch[index+1][-2] - state_batch[index][-2]) * self.config.max_state_value
-                    reward += num_attackers_shot * self.config.attackers_weight
+                # 1. Divers check
+                divers_ok = obtained_num_divers >= (desired_num_divers * 0.99)
+                # 2. Oxygen check
+                oxy_ok = abs(obtained_oxy_bucket - desired_oxy_bucket) < 0.1
+                # 3. Location check (Must be at surface)
+                at_surface = obtained_y_vec < (25 / self.config.max_state_value)
 
-                    self.push(state_batch[index],
-                              action_batch[index],
-                              reward,
-                              next_state_batch[index],
-                              done_batch[index],
-                              obtained_goals[goal_idx])
+                # State-based success check
+                if divers_ok and oxy_ok and at_surface and obtained_num_divers > 0:
+                    reward = 0.0
+                else:
+                    reward = -1.0
+
+                # Attacker bonus
+                num_attackers_shot = (state_batch[index + 1][-2] - state_batch[index][-2]) * self.config.max_state_value
+                reward += num_attackers_shot * self.config.attackers_weight
+
+                self.push(state_batch[index],
+                          action_batch[index],
+                          reward,
+                          next_state_batch[index],
+                          done_batch[index],
+                          obtained_goals[goal_idx])
 
     def update_last_index_reward(self):
         """
@@ -242,5 +247,4 @@ class DQN(nn.Module):
 
         with torch.no_grad():  # Don't track gradients during action selection
             output = self.forward(in_state, goal)
-            print(f"output: {output}")
             return torch.argmax(output).item()
