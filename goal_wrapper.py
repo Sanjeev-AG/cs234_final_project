@@ -27,7 +27,6 @@ class SeaQWrapper(gym.Wrapper):
 
         # Dimensions updated based on our new goal definition
         self.num_goal_dimension = 2
-        self.extra_state_dimension = 2
 
         self.max_reward = -10
         self.episode_success = False
@@ -68,6 +67,7 @@ class SeaQWrapper(gym.Wrapper):
 
         self.num_divers_history_buffer.append(self.episode_success)
         self.episode_success = False
+        self.update_max_goals()
 
         if "seed" in kwargs:
             np.random.seed(kwargs["seed"])
@@ -77,6 +77,7 @@ class SeaQWrapper(gym.Wrapper):
         self.sample_goal()
 
         obs, info = self.env.reset(**kwargs)
+        obs = obs.flatten()
         self.achieved_goal = self.get_achieved_goal()
         return obs, info
 
@@ -102,15 +103,16 @@ class SeaQWrapper(gym.Wrapper):
 
     def step(self, action):
         next_obs, reward, terminated, truncated, _ = self.env.step(action)
+        next_obs = next_obs.flatten()
         self.update_objective_values(reward, next_obs)
-        reward_her = self.compute_reward()
+        reward_her = self.compute_reward(action)
 
         # Modify the observation for the model to work on:
-        next_obs = np.concatenate((next_obs, [self.num_attackers_shot, self.num_surfaced_count]))
+        # next_obs = np.concatenate((next_obs, [self.num_attackers_shot, self.num_surfaced_count))
 
         return next_obs, reward, terminated, truncated, reward_her
 
-    def compute_reward(self):
+    def compute_reward(self, action):
         """
         Computes the reward based on the CURRENT state of the submarine.
         Success is defined as: Having target divers AND target oxygen bucket AND being at the surface.
@@ -133,13 +135,22 @@ class SeaQWrapper(gym.Wrapper):
 
         # Must satisfy all 3 state conditions to get the 0.0 reward
         if divers_ok and oxy_ok and at_surface and self.num_divers_collected > 0:
-            reward = 0.0
+            reward = 50
             self.episode_success = True
         else:
-            reward = -1.0
+            reward = 0
 
         # Attacker bonus
-        reward += self.config.attackers_weight * (self.num_attackers_shot - self.prev_num_attackers_shot)
+        bonus = self.config.attackers_weight * (self.num_attackers_shot - self.prev_num_attackers_shot)
+        firing_actions = [1] + list(range(10,18))
+
+        if bonus > 0:
+            reward += bonus
+        elif action in firing_actions:
+            # Continuous firing actions are observed towards the right of the screen.
+            # This negative reward should prevent firing actions potentially.
+            reward -= 0.1
+
 
         self.prev_num_attackers_shot = self.num_attackers_shot
 
@@ -149,21 +160,23 @@ class SeaQWrapper(gym.Wrapper):
         return reward
 
     def update_objective_values(self, reward, state):
+        offset = (self.config.stack_size - 1) * 128 # We get the state of the latest frame.,
+
         if reward in [20.0, 30.0]:
             self.num_attackers_shot += 1
 
-        self.curr_num_lives_left = state[59]
-        self.current_oxygen_level = state[102]
+        self.curr_num_lives_left = state[offset + 59]
+        self.current_oxygen_level = state[offset + 102]
 
         # Track divers normally
-        self.num_divers_collected = self.normalize_divers(state[62])
-        self.submarine_y_vector = self._normalize_state_value(state[97])
+        self.num_divers_collected = self.normalize_divers(state[offset + 62])
+        self.submarine_y_vector = self._normalize_state_value(state[offset + 97])
 
         # Track resurface events strictly for logging purposes
-        if state[62] < self._previous_state_num_divers and self.curr_num_lives_left == self.prev_num_lives_left and self.submarine_y_vector < (25 / self.config.max_state_value):
+        if state[offset + 62] < self._previous_state_num_divers and self.curr_num_lives_left == self.prev_num_lives_left and self.submarine_y_vector < (25 / self.config.max_state_value):
             self.num_surfaced_count += 1
 
-        self._previous_state_num_divers = state[62]
+        self._previous_state_num_divers = state[offset + 62]
         self.prev_num_lives_left = self.curr_num_lives_left
 
     def sample_goal(self):
@@ -200,7 +213,7 @@ class SeaQWrapper(gym.Wrapper):
                 self.num_divers_history_buffer.clear()
 
     def normalize_divers(self, num_divers):
-        return round(num_divers / self.config.max_divers_rescuable, 4)
+        return np.round(num_divers / self.config.max_divers_rescuable, 4)
 
     def _normalize_state_value(self, state_val):
-        return round(state_val / self.config.max_state_value, 4)
+        return np.round(state_val / self.config.max_state_value, 4)

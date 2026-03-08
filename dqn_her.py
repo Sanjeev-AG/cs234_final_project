@@ -110,51 +110,70 @@ class ReplayBuffer(object):
         indices = np.arange(self.ptr - N, self.ptr) % self.capacity
         return self._fetch_indices(indices)
 
-    def push_batch(self, state_batch, next_state_batch, action_batch, done_batch, obtained_goals, y_vectors_batch):
+    def push_batch(self, state_batch, next_state_batch, action_batch, original_rewards_batch, done_batch,
+                   obtained_goals, y_vectors_batch):
         """
         Push a batch of transitions into the replay buffer, and also generate
         HER samples for each transition in the batch.
-
-        *NOTE: You must pass `y_vectors_batch` into this function from main_her.py
-        so we know if the submarine was at the surface!*
         """
         num_samples = state_batch.shape[0]
 
         for index in range(num_samples - 2):
 
-            # Standard HER: Sample goals from future states in the same episode
+            # --- EXTRACT COMBAT SHAPING REWARD ---
+            # We look at the original reward the agent got on this step.
+            # Example 1: Agent fired blindly and missed. original_reward = -1.05
+            # Example 2: Agent hit an enemy. original_reward = -0.9
+            original_reward = original_rewards_batch[index].item()
+
+            # If the original_reward is greater than -0.5, the agent must have
+            # achieved the original goal (base reward 0.0).
+            # Otherwise, the base reward was -1.0.
+            if original_reward > 45:
+                base_original = 50
+            else:
+                base_original = 0
+
+            # The "combat_shaping" is the extra penalty/bonus from shooting.
+            # In Example 1: -1.05 - (-1.0) = -0.05 (Blind fire penalty)
+            # In Example 2: -0.9 - (-1.0) = +0.10 (Enemy hit bonus)
+            combat_shaping = original_reward - base_original
+            # ---------------------------------------
+
+            # Sample future states to use as fake HER goals
             goal_sample_indices = np.random.randint(low=index + 1, high=num_samples - 1, size=self.num_k)
 
             for goal_idx in goal_sample_indices:
-                # The relabeled goal is whatever divers and oxygen bucket we had at `goal_idx`
+                # 1. Extract the conditions of the future state we are pretending was the goal
                 desired_num_divers = obtained_goals[goal_idx][0]
                 desired_oxy_bucket = obtained_goals[goal_idx][1]
+                desired_y_vec = y_vectors_batch[goal_idx]  # NEW: The depth of the future state
 
-                # Did we achieve this goal on step `index+1`?
+                # 2. Extract the conditions of the step we are evaluating
                 obtained_num_divers = obtained_goals[index + 1][0]
                 obtained_oxy_bucket = obtained_goals[index + 1][1]
-                obtained_y_vec = y_vectors_batch[index + 1]  # Y-coord of the submarine at step index+1
+                obtained_y_vec = y_vectors_batch[index + 1]
 
-                # 1. Divers check
+                # 3. HER Goal Logic
                 divers_ok = obtained_num_divers >= (desired_num_divers * 0.99)
-                # 2. Oxygen check
                 oxy_ok = abs(obtained_oxy_bucket - desired_oxy_bucket) < 0.1
-                # 3. Location check (Must be at surface)
-                at_surface = obtained_y_vec < (25 / self.config.max_state_value)
 
-                # State-based success check
-                if divers_ok and oxy_ok and at_surface and obtained_num_divers > 0:
-                    reward = 0.0
+                # NEW: Did the submarine reach the specific depth of the synthetic goal?
+                # We allow a small margin of error (e.g., 5 RAM units)
+                depth_ok = abs(obtained_y_vec - desired_y_vec) < (5 / self.config.max_state_value)
+
+                # If it achieved the divers, oxygen, AND depth of the future state, it's a success!
+                if divers_ok and oxy_ok and depth_ok and obtained_num_divers > 0:
+                    new_base_reward = 50
                 else:
-                    reward = -1.0
+                    new_base_reward = 0
 
-                # Attacker bonus
-                num_attackers_shot = (state_batch[index + 1][-2] - state_batch[index][-2]) * self.config.max_state_value
-                reward += num_attackers_shot * self.config.attackers_weight
+                # Re-apply the combat shaping
+                final_her_reward = new_base_reward + combat_shaping
 
                 self.push(state_batch[index],
                           action_batch[index],
-                          reward,
+                          final_her_reward,
                           next_state_batch[index],
                           done_batch[index],
                           obtained_goals[goal_idx])
@@ -169,7 +188,7 @@ class ReplayBuffer(object):
 
 class DQN(nn.Module):
     """
-    Implementation of the DQN algorithm, including the replay buffer.
+        Implementation of the DQN algorithm, including the replay buffer.
     """
 
     def __init__(self, env, config):
@@ -185,11 +204,12 @@ class DQN(nn.Module):
         self.env = env
         self.lr = config.lr
         self.gamma = config.gamma
-        observation_dim = self.env.observation_space.shape[0]
+        if config.stack_size > 0:
+            observation_dim = self.env.observation_space.shape[-1] * config.stack_size
+        else:
+            observation_dim = self.env.observation_space.shape[0]
         if hasattr(env, 'num_goal_dimension'):
             observation_dim+=env.num_goal_dimension
-        if hasattr(env, 'extra_state_dimension'):
-            observation_dim+=env.extra_state_dimension
 
         self.network = build_mlp(input_size=observation_dim, output_size=env.action_space.n,
                                  size=config.layer_size,

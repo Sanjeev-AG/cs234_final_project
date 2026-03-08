@@ -4,6 +4,7 @@ Main training loop for DQN with Hindsight Experience Replay (HER) on the Seaques
 
 import argparse
 import gymnasium as gym
+from gymnasium.wrappers import FrameStackObservation
 import numpy as np
 import os
 import time
@@ -22,9 +23,11 @@ gym.register_envs(ale_py)
 # Environment Setup
 env_name = "ALE/Seaquest-v5"  # RAM observation, no sticky actions
 env = gym.make(env_name, render_mode=None, obs_type="ram")
-env = SeaQWrapper(env, SeaQuestConfig())
 
-obs_size = env.observation_space.shape[0]  # 128 for RAM
+env = FrameStackObservation(env=env, stack_size=4)
+env = SeaQWrapper(env, SeaQuestConfig())
+obs_size = env.observation_space.shape[0] * env.observation_space.shape[1]
+state_offset = env.observation_space.shape[1] * (env.observation_space.shape[0] -1)
 n_actions = env.action_space.n  # 18 for Seaquest
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -100,9 +103,8 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
 
     def reset_env(env):
         obs, _ = env.reset(seed=seed)
-        # Store the normalized Y vector for the first state
-        initial_y = env._normalize_state_value(obs[97])
-        obs = np.concatenate((obs, [0, 0]))
+        initial_y = env._normalize_state_value(obs[state_offset + 97])
+        # obs = np.concatenate((obs, [0, 0]))
         obs = obs.astype(np.float32) / 255.0  # Normalize RAM [0,255] -> [0,1]
         return obs, initial_y
 
@@ -122,7 +124,7 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
     # Initialize the target action value as the model.
     target_model = DQN(env=env, config=config)
     target_model.load_state_dict(model.state_dict())
-    replay_buffer = ReplayBuffer(state_dim=obs_size + env.extra_state_dimension, capacity=config.replay_buffer_size, device=device, goal_dim=env.num_goal_dimension, config=config)
+    replay_buffer = ReplayBuffer(state_dim=obs_size, capacity=config.replay_buffer_size, device=device, goal_dim=env.num_goal_dimension, config=config)
 
     start_step = 0
     episode_rewards = []
@@ -140,7 +142,7 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
     episode_reward = 0
 
     # Exponential decay of epsilon value:
-    exploration_fraction = 4_000_000
+    exploration_fraction = 5_000_000
     min_epsilon = 0.05
 
     # Training loop for 5 million steps
@@ -148,11 +150,12 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
         action = model.select_action(obs, goal=env.desired_goal)
         next_obs_raw, reward, terminated, truncated, reward_her = env.step(action)
 
-        # Extract Y vector from raw next observation before we scale it
-        # RAM byte 97 is the submarine Y position
-        current_y_vector = env._normalize_state_value(next_obs_raw[97])
 
         next_obs = next_obs_raw.astype(np.float32) / 255.0
+
+        # Extract Y vector from raw next observation before we scale it
+        # RAM byte 97 is the submarine Y position
+        current_y_vector = env._normalize_state_value(next_obs_raw[state_offset + 97])
         done = terminated or truncated
 
         obtained_goals.append(env.get_achieved_goal())
@@ -192,14 +195,11 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
             print(f"Episode {len(episode_rewards)}, Reward: {episode_reward}, Steps: {step},"
                   f"Max reward in the episode: {env.get_max_reward()}, Desired goal: {env.desired_goal}")
 
-            if len(episode_rewards) % config.goal_update_frequency == 0:
-                env.update_max_goals()
-
             # Update the replay buffer with HER transitions:
             (state, next_state, action_batch, rewards_her, terminal, goal) = replay_buffer.fetch_last_N_samples(time_step)
 
             # Pass obtained_y_vectors to push_batch
-            replay_buffer.push_batch(state, next_state, action_batch, terminal, obtained_goals, obtained_y_vectors)
+            replay_buffer.push_batch(state, next_state, action_batch, rewards_her, terminal, obtained_goals, obtained_y_vectors)
 
             # Reset the environment and episode trackers:
             time_step = 0
@@ -260,11 +260,10 @@ def evaluate(model: DQN):
         None (prints the average reward over 1000 evaluation episodes)
     """
     obs, _ = env.reset()
-    obs = np.concatenate((obs, [0, 0]))
     obs = obs.astype(np.float32) / 255.0
     total_reward = 0
 
-    # Set an extremely high goal during evaluation
+    # Set a high goal during evaluation
     env.desired_goal = torch.tensor([env.normalize_divers(6), env.get_oxygen_bucket(21)])
 
     model.epsilon = 0.0001
@@ -279,7 +278,6 @@ def evaluate(model: DQN):
 
         if terminated or truncated:
             obs, _ = env.reset()
-            obs = np.concatenate((obs, [0, 0]))
             obs = obs.astype(np.float32) / 255.0
 
     print(f"Average reward: {total_reward / 1000:.2f}")

@@ -11,9 +11,11 @@ class SeaQuestConfig:
         self.lr = 1e-4
         self.gamma = 0.99  # the discount factor
 
+        self.stack_size = 4
+
         # parameters for the policy and baseline models
         self.n_layers = 3
-        self.layer_size = [512, 256, 128]
+        self.layer_size = [1024, 512, 256]
         self.epsilon = 1
         self.epsilon_delay = -3e-7
         self.replay_buffer_size = 2000000
@@ -22,7 +24,7 @@ class SeaQuestConfig:
         self.tau_weight = 0.005
 
         self.max_len_history_buffer = 200
-        self.attackers_weight = 0.1 # Additional reward for each attacker shot
+        self.attackers_weight = 1 # Additional reward for each attacker shot
 
         self.max_divers_rescuable = 6
         self.max_state_value = pow(2,8)-1
