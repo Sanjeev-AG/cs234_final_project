@@ -21,7 +21,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def evaluate(checkpoint_path, n_episodes=100, seed=0):
     config = SeaQuestConfig()
     env = gym.make("ALE/Seaquest-v5", render_mode="human", obs_type="ram")
-    env = FrameStackObservation(env=env, stack_size=config.stack_size)
+    # env = FrameStackObservation(env=env, stack_size=config.stack_size)
     env = SeaQWrapper(env, config)
 
     model = DQN(env=env, config=config)
@@ -41,10 +41,11 @@ def evaluate(checkpoint_path, n_episodes=100, seed=0):
     print(f"Loaded checkpoint: step={step_count}, training episodes={n_train_episodes}")
 
     # Set a high goal to push the agent to perform well
-    env.desired_goal = torch.tensor([env.normalize_divers(6), env.get_oxygen_bucket(21)])
+    env.desired_goal = torch.tensor([1, 1])
 
     for ep in range(n_episodes):
         obs, _ = env.reset(seed=seed + ep)
+        obs = np.concatenate((obs, [0]))
         obs = obs.astype(np.float32) / 255.0
 
         episode_reward = 0
@@ -54,7 +55,7 @@ def evaluate(checkpoint_path, n_episodes=100, seed=0):
             with torch.no_grad():
                 action = model.select_action(obs, goal=env.desired_goal)
 
-            obs, reward, terminated, truncated, _ = env.step(action)
+            obs, reward, terminated, truncated, _, _ = env.step(action)
             obs = obs.astype(np.float32) / 255.0
             episode_reward += reward
             done = terminated or truncated

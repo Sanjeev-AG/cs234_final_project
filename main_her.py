@@ -24,10 +24,12 @@ gym.register_envs(ale_py)
 env_name = "ALE/Seaquest-v5"  # RAM observation, no sticky actions
 env = gym.make(env_name, render_mode=None, obs_type="ram")
 
-env = FrameStackObservation(env=env, stack_size=4)
+# env = FrameStackObservation(env=env, stack_size=4)
 env = SeaQWrapper(env, SeaQuestConfig())
-obs_size = env.observation_space.shape[0] * env.observation_space.shape[1]
-state_offset = env.observation_space.shape[1] * (env.observation_space.shape[0] -1)
+# obs_size = env.observation_space.shape[0] * env.observation_space.shape[1]
+# state_offset = env.observation_space.shape[1] * (env.observation_space.shape[0] -1)
+obs_size = env.observation_space.shape[0]
+state_offset = 0
 n_actions = env.action_space.n  # 18 for Seaquest
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -101,12 +103,14 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
         seed:       Random seed for reproducibility
     """
 
-    def reset_env(env):
-        obs, _ = env.reset(seed=seed)
-        initial_y = env._normalize_state_value(obs[state_offset + 97])
+    def reset_env(env, seed=None):
+        if seed is not None:
+            obs, _ = env.reset(seed=seed)
+        else:
+            obs, _ = env.reset()
         obs = np.concatenate((obs, [0]))
         obs = obs.astype(np.float32) / 255.0  # Normalize RAM [0,255] -> [0,1]
-        return obs, initial_y
+        return obs
 
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -114,17 +118,16 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
     time_step = 0
     config = SeaQuestConfig()
     model = DQN(env=env, config=config)
+    episode_step_idx = 0
 
     obtained_goals = []
-    obtained_y_vectors = []  # NEW: Track Y-vectors for HER
 
-    obs, initial_y = reset_env(env)
-    obtained_y_vectors.append(initial_y)
+    obs = reset_env(env, seed=seed)
 
     # Initialize the target action value as the model.
     target_model = DQN(env=env, config=config)
     target_model.load_state_dict(model.state_dict())
-    replay_buffer = ReplayBuffer(state_dim=obs_size, capacity=config.replay_buffer_size, device=device, goal_dim=env.num_goal_dimension, config=config)
+    replay_buffer = ReplayBuffer(state_dim=obs_size + env.num_extra_dimension, capacity=config.replay_buffer_size, device=device, goal_dim=env.num_goal_dimension, config=config)
 
     start_step = 0
     episode_rewards = []
@@ -142,31 +145,31 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
     episode_reward = 0
 
     # Exponential decay of epsilon value:
-    exploration_fraction = 5_000_000
-    min_epsilon = 0.05
+    exploration_fraction = 1_000_000
+    min_epsilon = 0.1
 
     success_idx = []
     backup_idx = []
 
     # Training loop for 5 million steps
     for step in range(start_step, n_iters):
-        action = model.select_action(obs, goal=env.desired_goal)
+        action = model.select_action(obs, goal=env.desired_goal/255) # Normalize the goals before passing to the model
         next_obs_raw, reward, terminated, truncated, reward_her, has_resurfaced = env.step(action)
 
         if reward_her > 45 or has_resurfaced:
-            success_idx.append(step)
-        elif env.achieved_goal[0] >= 1/env.config.max_divers_rescuable:
-            backup_idx.append(step)
+            success_idx.append(episode_step_idx)
+        elif env.achieved_goal[0] >= 1:
+            backup_idx.append(episode_step_idx)
+
+        episode_step_idx += 1
 
         next_obs = next_obs_raw.astype(np.float32) / 255.0
 
         # Extract Y vector from raw next observation before we scale it
         # RAM byte 97 is the submarine Y position
-        current_y_vector = env._normalize_state_value(next_obs_raw[state_offset + 97])
         done = terminated or truncated
 
         obtained_goals.append(env.get_achieved_goal())
-        obtained_y_vectors.append(current_y_vector)  # Store Y vector for this step
 
         replay_buffer.push(obs, action, reward_her, next_obs, done, env.desired_goal)
         time_step += 1
@@ -176,8 +179,10 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
         # Train the model if the replay buffer has enough samples
         if replay_buffer.size >= 10000:
             (state, next_state, action_batch, rewards, terminal, goal) = replay_buffer.sample(
-                batch_size=config.batch_size)
+                batch_size=config.batch_size,
+                use_priority=env.max_divers_to_collect > 1)
 
+            goal = goal / 255
             # 1. Compute TD Targets WITHOUT gradients
             with torch.no_grad():
                 # Double DQN logic
@@ -211,12 +216,12 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
             # Reset the environment and episode trackers:
             time_step = 0
             episode_reward = 0
+            episode_step_idx = 0
             obtained_goals = []
-            obtained_y_vectors = []
 
-            obs, initial_y = reset_env(env)
+            obs= reset_env(env)
             success_idx = []
-            obtained_y_vectors.append(initial_y)
+            backup_idx = []
 
         # Calculate the new epsilon
         decay_rate = (1.0 - min_epsilon) / exploration_fraction
@@ -235,62 +240,6 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
 
     return model
 
-def soft_update(model, target_model, tau=0.005):
-    """
-    Performs a soft update of the target model's parameters towards the policy model's parameters.
-
-    Args:
-        model:          DQN model whose parameters will be used to update the target model
-        target_model:   Target DQN model to be updated
-        tau:            Interpolation parameter for the soft update (0 < tau <= 1)
-    
-    Returns:
-        target_model:   Updated target model with parameters softly updated towards the policy model
-    """
-    policy_state_dict = model.state_dict()
-    target_state_dict = target_model.state_dict()
-
-    for k, v in policy_state_dict.items():
-        target_state_dict[k] = tau * v + (1 - tau) * target_state_dict[k]
-
-    target_model.load_state_dict(target_state_dict)
-    return target_model
-
-# Evaluation Template
-def evaluate(model: DQN):
-    """
-    Evaluates the trained DQN model on the Seaquest environment.
-
-    Args:
-        model: Trained DQN model to be evaluated
-
-    Returns:
-        None (prints the average reward over 1000 evaluation episodes)
-    """
-    obs, _ = env.reset()
-    obs = obs.astype(np.float32) / 255.0
-    total_reward = 0
-
-    # Set a high goal during evaluation
-    env.desired_goal = torch.tensor([env.normalize_divers(6), env.get_oxygen_bucket(21)])
-
-    model.epsilon = 0.0001
-
-    for _ in range(1000):
-        with torch.no_grad():
-            action = model.select_action(obs, goal=env.desired_goal)
-
-        obs, reward, terminated, truncated, _ = env.step(action)
-        obs = obs.astype(np.float32) / 255.0
-        total_reward += reward
-
-        if terminated or truncated:
-            obs, _ = env.reset()
-            obs = obs.astype(np.float32) / 255.0
-
-    print(f"Average reward: {total_reward / 1000:.2f}")
-    env.close()
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--n_iters", type=int, default=5000000, help="Number of training iterations (environment steps) to run")
@@ -300,9 +249,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     t1 = time.time()
-    trained_model = train(n_iters=args.n_iters, resume=args.resume, seed=args.seed)
+    trained_model = train(n_iters=args.n_iters, resume=args.resume, seed=args.seed, output_dir=args.output_dir)
     t2 = time.time()
-    evaluate(trained_model)
 
     print(f"Device: {device}")
     print(f"Training completed in {int((t2 - t1) // 3600)}h:{int((t2 - t1) % 3600 // 60)}m:{int((t2 - t1) % 60)}s")

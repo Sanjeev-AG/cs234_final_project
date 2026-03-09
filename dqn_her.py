@@ -44,6 +44,7 @@ class ReplayBuffer(object):
         self.reward = torch.zeros((capacity, 1), dtype=torch.float).to(device)
         self.goal = torch.zeros((capacity, goal_dim), dtype=torch.float32).to(device)
         self.done = torch.zeros((capacity, 1), dtype=torch.uint8).to(device)
+        self.priority = torch.ones((capacity,), dtype=torch.float32).to(device)
 
 
     def push(self, state, action, reward, next_state, done, goal):
@@ -58,6 +59,7 @@ class ReplayBuffer(object):
             self.reward[self.ptr] = torch.as_tensor(reward, dtype=torch.float32).to(self.device)
             self.done[self.ptr] = torch.as_tensor(done, dtype=torch.uint8).to(self.device)
             self.goal[self.ptr] = torch.as_tensor(goal, dtype=torch.float32).to(self.device)
+            self.priority[self.ptr] = self._compute_priority(reward, goal)
 
         self.ptr = (self.ptr + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
@@ -85,15 +87,25 @@ class ReplayBuffer(object):
 
         return state_batch, next_state_batch, action_batch, reward_batch, done_batch, goal_batch
 
+    def _compute_priority(self, reward, goal):
+        diver_count = goal[0].item() if isinstance(goal, torch.Tensor) else goal[0]
+        reward_val = reward.item() if isinstance(reward, torch.Tensor) else reward
+        is_success = reward_val >= 45.0
+        base_weight = self.config.priority_base ** diver_count
+        multiplier = self.config.success_multiplier if is_success else 1.0
+        return base_weight * multiplier
 
-    def sample(self, batch_size):
-        """
-        Sample a batch of transitions from the replay buffer.
+    def sample(self, batch_size, use_priority=False):
+        if not use_priority:
+            indices = np.random.randint(0, self.size, size=batch_size)
+            return self._fetch_indices(indices)
 
-        Returns:
-            Transitions corresponding to the sampled indices
-        """
-        indices = np.random.randint(0, self.size, size=batch_size)
+        # Two-stage weighted sampling
+        candidate_count = min(batch_size * 16, self.size)
+        candidate_indices = torch.randint(0, self.size, (candidate_count,), device=self.device)
+        candidate_priorities = self.priority[candidate_indices]
+        chosen = torch.multinomial(candidate_priorities, num_samples=batch_size, replacement=False)
+        indices = candidate_indices[chosen]
         return self._fetch_indices(indices)
 
     def fetch_last_N_samples(self, N):
@@ -118,9 +130,14 @@ class ReplayBuffer(object):
             else:
                 choices = np.random.choice(valid_values, size=len(valid_values), replace=False)
 
-        else:
+        elif len(backup_idx) > 0:
             valid_values = [x for x in backup_idx if x > start_idx]
-            choices = np.random.choice(valid_values, size=1, replace=False)
+            if len(valid_values) > 0:
+                choices = np.random.choice(valid_values, size=1, replace=False)
+            else:
+                choices = []
+        else:
+            choices = []
 
         return choices
 
@@ -183,14 +200,6 @@ class ReplayBuffer(object):
                           next_state_batch[index],
                           done_batch[index],
                           obtained_goals[goal_idx])
-
-    def update_last_index_reward(self):
-        """
-        Updates the reward of the last transition in the replay buffer to 0.
-        """
-        last_ptr = (self.ptr-1) % self.capacity
-        self.reward[last_ptr] = 0
-
 
 class DQN(nn.Module):
     """

@@ -113,9 +113,12 @@ class SeaQWrapper(gym.Wrapper):
 
         # Check if there is a resurfacing event:
         with torch.no_grad():
-            if torch.allclose(self.achieved_goal, self.desired_goal):
+            if torch.equal(self.achieved_goal, self.desired_goal):
                 reward = 50
+                if self.curr_num_lives_left > 0:
+                    reward += 20 * self.curr_num_lives_left
                 self.num_surfaced_count = 0 # Clearing the number of surfaced count after achieving the goal
+                self.episode_success = True
 
         bonus = self.config.attackers_weight * (self.num_attackers_shot - self.prev_num_attackers_shot)
 
@@ -138,12 +141,12 @@ class SeaQWrapper(gym.Wrapper):
         self.curr_num_lives_left = state[offset + 59]
 
         # Track divers normally
-        self.num_divers_collected = self.normalize_divers(self._previous_state_num_divers)
-        self.submarine_y_vector = self._normalize_state_value(state[offset + 97])
+        self.num_divers_collected = self._previous_state_num_divers
+        self.submarine_y_vector = state[offset + 97]
 
         # Track resurface events strictly for logging purposes
-        if state[offset + 62] < self._previous_state_num_divers and self.curr_num_lives_left == self.prev_num_lives_left and self.submarine_y_vector < (17 / self.config.max_state_value):
-            self.num_surfaced_count += self._normalize_num_surface_count(1)
+        if state[offset + 62] < self._previous_state_num_divers and self.curr_num_lives_left == self.prev_num_lives_left and self.submarine_y_vector in [13,14,15,16,17]:
+            self.num_surfaced_count += 1
 
         self._previous_state_num_divers = state[offset + 62]
         self.prev_num_lives_left = self.curr_num_lives_left
@@ -155,16 +158,14 @@ class SeaQWrapper(gym.Wrapper):
         """
         # Sample divers
         if random.random() > 0.7:
-            num_divers_to_collect = self.normalize_divers(random.randint(a=1, b=self.max_divers_to_collect))
+            num_divers_to_collect = random.randint(a=1, b=self.max_divers_to_collect)
         else:
-            num_divers_to_collect = self.normalize_divers(self.max_divers_to_collect)
+            num_divers_to_collect = self.max_divers_to_collect
 
         if random.random() < 0.95:
             desired_num_surfaced_count = 1
         else:
             desired_num_surfaced_count = random.choice([1, 2, 3])
-
-        desired_num_surfaced_count = self.normalize_divers(desired_num_surfaced_count)
 
         self.desired_goal = torch.tensor([num_divers_to_collect, desired_num_surfaced_count])
 
@@ -177,18 +178,11 @@ class SeaQWrapper(gym.Wrapper):
 
         success_rate = sum(self.num_divers_history_buffer) / len(self.num_divers_history_buffer)
 
-        if success_rate >= 0.60:  # If it's succeeding 60% of the time
+        print(f"success rate of the desired goal: {success_rate}")
+
+        if success_rate >= 0.50:  # If it's succeeding 50% of the time
             if self.max_divers_to_collect < self.config.max_divers_rescuable:
                 self.max_divers_to_collect += 1
                 print(f"*** CURRICULUM ADVANCED! Max divers is now {self.max_divers_to_collect} ***")
                 # Clear history so we don't immediately advance again next check
                 self.num_divers_history_buffer.clear()
-
-    def normalize_divers(self, num_divers):
-        return np.round(num_divers / self.config.max_divers_rescuable, 4)
-
-    def _normalize_state_value(self, state_val):
-        return np.round(state_val / self.config.max_state_value, 4)
-
-    def _normalize_num_surface_count(self, num_surface_count):
-        return np.round(num_surface_count / self.config.max_retries_permitted, 4)
