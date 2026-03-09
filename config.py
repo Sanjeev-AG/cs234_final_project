@@ -27,6 +27,7 @@ class SeaQuestConfig:
         self.attackers_weight = 1 # Additional reward for each attacker shot
 
         self.max_divers_rescuable = 6
+        self.max_retries_permitted = 6
         self.max_state_value = pow(2,8)-1
         self.allowable_range_y_vec = round(5 / self.max_state_value, 4)
 

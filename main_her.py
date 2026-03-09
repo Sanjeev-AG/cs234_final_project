@@ -104,7 +104,7 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
     def reset_env(env):
         obs, _ = env.reset(seed=seed)
         initial_y = env._normalize_state_value(obs[state_offset + 97])
-        # obs = np.concatenate((obs, [0, 0]))
+        obs = np.concatenate((obs, [0]))
         obs = obs.astype(np.float32) / 255.0  # Normalize RAM [0,255] -> [0,1]
         return obs, initial_y
 
@@ -145,11 +145,18 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
     exploration_fraction = 5_000_000
     min_epsilon = 0.05
 
+    success_idx = []
+    backup_idx = []
+
     # Training loop for 5 million steps
     for step in range(start_step, n_iters):
         action = model.select_action(obs, goal=env.desired_goal)
-        next_obs_raw, reward, terminated, truncated, reward_her = env.step(action)
+        next_obs_raw, reward, terminated, truncated, reward_her, has_resurfaced = env.step(action)
 
+        if reward_her > 45 or has_resurfaced:
+            success_idx.append(step)
+        elif env.achieved_goal[0] >= 1/env.config.max_divers_rescuable:
+            backup_idx.append(step)
 
         next_obs = next_obs_raw.astype(np.float32) / 255.0
 
@@ -199,7 +206,7 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
             (state, next_state, action_batch, rewards_her, terminal, goal) = replay_buffer.fetch_last_N_samples(time_step)
 
             # Pass obtained_y_vectors to push_batch
-            replay_buffer.push_batch(state, next_state, action_batch, rewards_her, terminal, obtained_goals, obtained_y_vectors)
+            replay_buffer.push_batch(state, next_state, action_batch, rewards_her, terminal, obtained_goals, success_idx, backup_idx)
 
             # Reset the environment and episode trackers:
             time_step = 0
@@ -208,6 +215,7 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
             obtained_y_vectors = []
 
             obs, initial_y = reset_env(env)
+            success_idx = []
             obtained_y_vectors.append(initial_y)
 
         # Calculate the new epsilon

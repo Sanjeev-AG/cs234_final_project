@@ -27,6 +27,7 @@ class SeaQWrapper(gym.Wrapper):
 
         # Dimensions updated based on our new goal definition
         self.num_goal_dimension = 2
+        self.num_extra_dimension = 1
 
         self.max_reward = -10
         self.episode_success = False
@@ -35,6 +36,7 @@ class SeaQWrapper(gym.Wrapper):
         self.num_divers_collected = 0
         self.num_attackers_shot = 0
         self.num_surfaced_count = 0
+        self.previous_num_resurfaced_count = 0
         self.submarine_y_vector = 0
         self.prev_num_attackers_shot = self.num_attackers_shot
 
@@ -42,7 +44,6 @@ class SeaQWrapper(gym.Wrapper):
         self.curr_num_lives_left = 3
         self.prev_num_lives_left = self.curr_num_lives_left
         self._previous_state_num_divers = 0
-        self.current_oxygen_level = 64 # Max oxygen in Seaquest RAM
 
         self.desired_goal = None
         self.max_divers_to_collect: int = 1
@@ -55,12 +56,12 @@ class SeaQWrapper(gym.Wrapper):
         self.num_divers_collected = 0
         self.num_attackers_shot = 0
         self.num_surfaced_count = 0
+        self.previous_num_resurfaced_count = 0
         self.submarine_y_vector = 0
         self.max_reward = -10
         self.prev_num_attackers_shot = self.num_attackers_shot
 
         self._previous_state_num_divers = 0
-        self.current_oxygen_level = 64
 
         self.curr_num_lives_left = 3
         self.prev_num_lives_left = self.curr_num_lives_left
@@ -81,22 +82,8 @@ class SeaQWrapper(gym.Wrapper):
         self.achieved_goal = self.get_achieved_goal()
         return obs, info
 
-    def get_oxygen_bucket(self, oxygen_val):
-        """
-        Discretize oxygen into 3 buckets:
-        Max is 64.
-        High (>42), Med (21-42), Low (<21)
-        We normalize these buckets to [0.0, 0.5, 1.0] for the neural net.
-        """
-        if oxygen_val > 42:
-            return 0.0 # High
-        elif oxygen_val > 21:
-            return 0.5 # Med
-        else:
-            return 1.0 # Low
-
     def get_achieved_goal(self):
-        return torch.tensor([self.num_divers_collected, self.get_oxygen_bucket(self.current_oxygen_level)])
+        return torch.tensor([self.num_divers_collected, self.num_surfaced_count])
 
     def get_max_reward(self):
         return self.max_reward
@@ -108,9 +95,12 @@ class SeaQWrapper(gym.Wrapper):
         reward_her = self.compute_reward(action)
 
         # Modify the observation for the model to work on:
-        # next_obs = np.concatenate((next_obs, [self.num_attackers_shot, self.num_surfaced_count))
+        next_obs = np.concatenate((next_obs, [self.num_surfaced_count]))
 
-        return next_obs, reward, terminated, truncated, reward_her
+        has_resurfaced = self.num_surfaced_count > self.previous_num_resurfaced_count
+        self.previous_num_resurfaced_count = self.num_surfaced_count
+
+        return next_obs, reward, terminated, truncated, reward_her, has_resurfaced
 
     def compute_reward(self, action):
         """
@@ -119,38 +109,18 @@ class SeaQWrapper(gym.Wrapper):
         """
         self.achieved_goal = self.get_achieved_goal()
 
-        desired_num_divers = self.desired_goal[self.pos_goal_num_divers]
-        desired_oxy_bucket = self.desired_goal[self.pos_goal_oxygen]
+        reward = 0
 
-        # 1. Check Divers
-        divers_ok = self.num_divers_collected >= (desired_num_divers * 0.99)
+        # Check if there is a resurfacing event:
+        with torch.no_grad():
+            if torch.allclose(self.achieved_goal, self.desired_goal):
+                reward = 50
+                self.num_surfaced_count = 0 # Clearing the number of surfaced count after achieving the goal
 
-        # 2. Check Oxygen Bucket
-        current_oxy_bucket = self.get_oxygen_bucket(self.current_oxygen_level)
-        oxy_ok = abs(current_oxy_bucket - desired_oxy_bucket) < 0.1
-
-        # 3. Check Location (Must be near the surface to count as a "resurface success")
-        # In RAM 97, values < 25 are generally considered "surface"
-        at_surface = self.submarine_y_vector < (25 / self.config.max_state_value)
-
-        # Must satisfy all 3 state conditions to get the 0.0 reward
-        if divers_ok and oxy_ok and at_surface and self.num_divers_collected > 0:
-            reward = 50
-            self.episode_success = True
-        else:
-            reward = 0
-
-        # Attacker bonus
         bonus = self.config.attackers_weight * (self.num_attackers_shot - self.prev_num_attackers_shot)
-        firing_actions = [1] + list(range(10,18))
 
         if bonus > 0:
             reward += bonus
-        elif action in firing_actions:
-            # Continuous firing actions are observed towards the right of the screen.
-            # This negative reward should prevent firing actions potentially.
-            reward -= 0.1
-
 
         self.prev_num_attackers_shot = self.num_attackers_shot
 
@@ -166,15 +136,14 @@ class SeaQWrapper(gym.Wrapper):
             self.num_attackers_shot += 1
 
         self.curr_num_lives_left = state[offset + 59]
-        self.current_oxygen_level = state[offset + 102]
 
         # Track divers normally
-        self.num_divers_collected = self.normalize_divers(state[offset + 62])
+        self.num_divers_collected = self.normalize_divers(self._previous_state_num_divers)
         self.submarine_y_vector = self._normalize_state_value(state[offset + 97])
 
         # Track resurface events strictly for logging purposes
-        if state[offset + 62] < self._previous_state_num_divers and self.curr_num_lives_left == self.prev_num_lives_left and self.submarine_y_vector < (25 / self.config.max_state_value):
-            self.num_surfaced_count += 1
+        if state[offset + 62] < self._previous_state_num_divers and self.curr_num_lives_left == self.prev_num_lives_left and self.submarine_y_vector < (17 / self.config.max_state_value):
+            self.num_surfaced_count += self._normalize_num_surface_count(1)
 
         self._previous_state_num_divers = state[offset + 62]
         self.prev_num_lives_left = self.curr_num_lives_left
@@ -190,11 +159,14 @@ class SeaQWrapper(gym.Wrapper):
         else:
             num_divers_to_collect = self.normalize_divers(self.max_divers_to_collect)
 
-        # Sample oxygen bucket (0.0 = High, 0.5 = Med, 1.0 = Low)
-        # We bias toward medium/low to force longer dives
-        oxy_bucket = random.choice([0.0, 0.5, 0.5, 1.0, 1.0])
+        if random.random() < 0.95:
+            desired_num_surfaced_count = 1
+        else:
+            desired_num_surfaced_count = random.choice([1, 2, 3])
 
-        self.desired_goal = torch.tensor([num_divers_to_collect, oxy_bucket])
+        desired_num_surfaced_count = self.normalize_divers(desired_num_surfaced_count)
+
+        self.desired_goal = torch.tensor([num_divers_to_collect, desired_num_surfaced_count])
 
     def update_max_goals(self):
         """
@@ -217,3 +189,6 @@ class SeaQWrapper(gym.Wrapper):
 
     def _normalize_state_value(self, state_val):
         return np.round(state_val / self.config.max_state_value, 4)
+
+    def _normalize_num_surface_count(self, num_surface_count):
+        return np.round(num_surface_count / self.config.max_retries_permitted, 4)
