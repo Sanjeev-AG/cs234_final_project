@@ -115,8 +115,6 @@ class SeaQWrapper(gym.Wrapper):
         with torch.no_grad():
             if torch.equal(self.achieved_goal, self.desired_goal):
                 reward = 50
-                if self.curr_num_lives_left > 0:
-                    reward += 20 * self.curr_num_lives_left
                 self.num_surfaced_count = 0 # Clearing the number of surfaced count after achieving the goal
                 self.episode_success = True
 
