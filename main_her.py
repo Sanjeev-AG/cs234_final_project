@@ -240,6 +240,8 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
         if step > 0 and step % 2_000_000 == 0:
             os.makedirs(output_dir, exist_ok=True)
             save_checkpoint(model, target_model, step, episode_rewards, output_dir)
+            np.save(os.path.join(output_dir, "scores.npy"), episode_rewards)
+            np.save(os.path.join(output_dir, "scores_her.npy"), episode_rewards_her)
             print(f"Periodic checkpoint saved at step {step}")
 
     # Save scores, plot, and model checkpoint

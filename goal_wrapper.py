@@ -22,6 +22,7 @@ class SeaQWrapper(gym.Wrapper):
 
         self.config = config
         self.updated_max_goals = False
+        self.curriculum_just_advanced = False
         self.pos_goal_num_divers = 0
         self.pos_goal_oxygen = 1
 
@@ -47,6 +48,7 @@ class SeaQWrapper(gym.Wrapper):
 
         self.desired_goal = None
         self.max_divers_to_collect: int = 1
+        self._pending_surfaced_reset = False
 
         self.num_divers_history_buffer = deque(maxlen=100)
 
@@ -60,19 +62,24 @@ class SeaQWrapper(gym.Wrapper):
         self.submarine_y_vector = 0
         self.max_reward = -10
         self.prev_num_attackers_shot = self.num_attackers_shot
+        self._pending_surfaced_reset = False
 
         self._previous_state_num_divers = 0
 
         self.curr_num_lives_left = 3
         self.prev_num_lives_left = self.curr_num_lives_left
 
-        self.num_divers_history_buffer.append(self.episode_success)
-        self.episode_success = False
-        self.update_max_goals()
-
         if "seed" in kwargs:
             np.random.seed(kwargs["seed"])
             torch.manual_seed(kwargs["seed"])
+        else:
+            if self.desired_goal[0] == self.max_divers_to_collect:
+                self.num_divers_history_buffer.append(self.episode_success)
+
+        # The queue is based on the maximum number of divers collected:
+        self.episode_success = False
+        self.update_max_goals()
+
 
         # Sample a goal from the set of goals for the Hindsight replay:
         self.sample_goal()
@@ -89,6 +96,10 @@ class SeaQWrapper(gym.Wrapper):
         return self.max_reward
 
     def step(self, action):
+        if self._pending_surfaced_reset:
+            self.num_surfaced_count = 0
+            self._pending_surfaced_reset = False
+
         next_obs, reward, terminated, truncated, _ = self.env.step(action)
         next_obs = next_obs.flatten()
         self.update_objective_values(reward, next_obs)
@@ -116,7 +127,7 @@ class SeaQWrapper(gym.Wrapper):
             if torch.equal(self.achieved_goal, self.desired_goal):
                 reward = 50
                 reward += self.curr_num_lives_left * 20
-                self.num_surfaced_count = 0 # Clearing the number of surfaced count after achieving the goal
+                self._pending_surfaced_reset = True  # Reset surfaced count on the next step
                 self.episode_success = True
 
         # bonus = self.config.attackers_weight * (self.num_attackers_shot - self.prev_num_attackers_shot)
@@ -157,15 +168,15 @@ class SeaQWrapper(gym.Wrapper):
         Forces the agent to learn to surface with varying amounts of oxygen remaining.
         """
         # Sample divers
-        if random.random() > 0.7:
+        if random.random() > 0.2:
             num_divers_to_collect = random.randint(a=1, b=self.max_divers_to_collect)
         else:
             num_divers_to_collect = self.max_divers_to_collect
 
-        if random.random() < 0.95:
-            desired_num_surfaced_count = 1
-        else:
-            desired_num_surfaced_count = random.choice([1, 2, 3])
+        # if random.random() <= 1:
+        desired_num_surfaced_count = 1
+        # else:
+        #     desired_num_surfaced_count = random.choice([1, 2, 3])
 
         self.desired_goal = torch.tensor([num_divers_to_collect, desired_num_surfaced_count])
 
@@ -180,9 +191,10 @@ class SeaQWrapper(gym.Wrapper):
 
         print(f"success rate of the desired goal: {success_rate}")
 
-        if success_rate >= 0.50:  # If it's succeeding 50% of the time
+        if success_rate >= 0.25:  # If it's succeeding 40% of the time
             if self.max_divers_to_collect < self.config.max_divers_rescuable:
                 self.max_divers_to_collect += 1
+                self.curriculum_just_advanced = True
                 print(f"*** CURRICULUM ADVANCED! Max divers is now {self.max_divers_to_collect} ***")
                 # Clear history so we don't immediately advance again next check
                 self.num_divers_history_buffer.clear()

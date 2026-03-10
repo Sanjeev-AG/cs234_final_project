@@ -15,7 +15,7 @@ class SeaQuestConfig:
         self.n_layers = 3
         self.layer_size = [512, 256, 128]
         self.epsilon = 1
-        self.replay_buffer_size = 1000000
+        self.replay_buffer_size = 2000000
         self.target_update_frequency = 10000
 
         self.attackers_weight = 1 # Additional reward for each attacker shot

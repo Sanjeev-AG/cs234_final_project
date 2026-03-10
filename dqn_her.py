@@ -183,16 +183,17 @@ class ReplayBuffer(object):
                 # 2. Extract the conditions of the step we are evaluating
                 obtained_num_divers = obtained_goals[index + 1][0]
                 obtained_num_resurfaced_count = obtained_goals[index + 1][1]
+                submarine_y_vector = state_batch[index+1][97] * 255
                 num_lives_left = state_batch[index+1][59] * 255
 
-                # If it achieved the divers, oxygen, AND depth of the future state, it's a success!
-                if desired_num_divers == obtained_num_divers and num_resurfaced_count == obtained_num_resurfaced_count:
-                    if num_resurfaced_count > 0:
-                        new_base_reward = 50 # For success indices
-                        new_base_reward += 20 * num_lives_left
-
-                    else:
-                        new_base_reward = 1 # For backup indices
+                if (desired_num_divers == obtained_num_divers
+                        and num_resurfaced_count == obtained_num_resurfaced_count
+                        and num_resurfaced_count > 0
+                        and 12 < submarine_y_vector < 19):
+                    new_base_reward = 50
+                    new_base_reward += 20 * num_lives_left
+                # elif desired_num_divers == obtained_num_divers:
+                #     new_base_reward = 5 * obtained_num_divers # Commenting out
                 else:
                     new_base_reward = 0
 
