@@ -125,7 +125,9 @@ class ReplayBuffer(object):
     def _sample_indices(self, start_idx, stop_idx, success_idx, backup_idx):
         if len(success_idx) > 0:
             valid_values = [x for x in success_idx if x > start_idx]
-            if len(valid_values) > 4:
+            if len(valid_values) == 0:
+                choices = []
+            elif len(valid_values) > 4:
                 choices = np.random.choice(valid_values, size=4, replace=False)
             else:
                 choices = np.random.choice(valid_values, size=len(valid_values), replace=False)
@@ -181,18 +183,21 @@ class ReplayBuffer(object):
                 # 2. Extract the conditions of the step we are evaluating
                 obtained_num_divers = obtained_goals[index + 1][0]
                 obtained_num_resurfaced_count = obtained_goals[index + 1][1]
+                num_lives_left = state_batch[index+1][59] * 255
 
                 # If it achieved the divers, oxygen, AND depth of the future state, it's a success!
                 if desired_num_divers == obtained_num_divers and num_resurfaced_count == obtained_num_resurfaced_count:
                     if num_resurfaced_count > 0:
                         new_base_reward = 50 # For success indices
+                        new_base_reward += 20 * num_lives_left
+
                     else:
                         new_base_reward = 1 # For backup indices
                 else:
                     new_base_reward = 0
 
                 # Re-apply the combat shaping
-                final_her_reward = new_base_reward + combat_shaping
+                final_her_reward = new_base_reward
 
                 self.push(state_batch[index],
                           action_batch[index],

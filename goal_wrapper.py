@@ -115,13 +115,14 @@ class SeaQWrapper(gym.Wrapper):
         with torch.no_grad():
             if torch.equal(self.achieved_goal, self.desired_goal):
                 reward = 50
+                reward += self.curr_num_lives_left * 20
                 self.num_surfaced_count = 0 # Clearing the number of surfaced count after achieving the goal
                 self.episode_success = True
 
-        bonus = self.config.attackers_weight * (self.num_attackers_shot - self.prev_num_attackers_shot)
-
-        if bonus > 0:
-            reward += bonus
+        # bonus = self.config.attackers_weight * (self.num_attackers_shot - self.prev_num_attackers_shot)
+        #
+        # if bonus > 0:
+        #     reward += bonus
 
         self.prev_num_attackers_shot = self.num_attackers_shot
 
@@ -145,6 +146,7 @@ class SeaQWrapper(gym.Wrapper):
         # Track resurface events strictly for logging purposes
         if state[offset + 62] < self._previous_state_num_divers and self.curr_num_lives_left == self.prev_num_lives_left and self.submarine_y_vector in [13,14,15,16,17]:
             self.num_surfaced_count += 1
+
 
         self._previous_state_num_divers = state[offset + 62]
         self.prev_num_lives_left = self.curr_num_lives_left

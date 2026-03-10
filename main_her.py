@@ -143,6 +143,8 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
             print("No checkpoint found, starting fresh.")
 
     episode_reward = 0
+    episode_reward_her = 0
+    episode_rewards_her = []
 
     # Exponential decay of epsilon value:
     exploration_fraction = 1_000_000
@@ -174,6 +176,7 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
         replay_buffer.push(obs, action, reward_her, next_obs, done, env.desired_goal)
         time_step += 1
         episode_reward += reward
+        episode_reward_her += reward_her
         obs = next_obs
 
         # Train the model if the replay buffer has enough samples
@@ -203,8 +206,9 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
 
         if done:
             episode_rewards.append(episode_reward)
+            episode_rewards_her.append(episode_reward_her)
 
-            print(f"Episode {len(episode_rewards)}, Reward: {episode_reward}, Steps: {step},"
+            print(f"Episode {len(episode_rewards)}, Reward: {episode_reward}, HER Reward: {episode_reward_her}, Steps: {step},"
                   f"Max reward in the episode: {env.get_max_reward()}, Desired goal: {env.desired_goal}")
 
             # Update the replay buffer with HER transitions:
@@ -216,6 +220,7 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
             # Reset the environment and episode trackers:
             time_step = 0
             episode_reward = 0
+            episode_reward_her = 0
             episode_step_idx = 0
             obtained_goals = []
 
@@ -231,10 +236,18 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
         if step % config.target_update_frequency == 0:
             target_model.load_state_dict(model.state_dict())
 
+        # Periodic checkpoint every 2M steps
+        if step > 0 and step % 2_000_000 == 0:
+            os.makedirs(output_dir, exist_ok=True)
+            save_checkpoint(model, target_model, step, episode_rewards, output_dir)
+            print(f"Periodic checkpoint saved at step {step}")
+
     # Save scores, plot, and model checkpoint
     os.makedirs(output_dir, exist_ok=True)
     np.save(os.path.join(output_dir, "scores.npy"), episode_rewards)
+    np.save(os.path.join(output_dir, "scores_her.npy"), episode_rewards_her)
     export_plot(episode_rewards, "Score", "Seaquest DQN", os.path.join(output_dir, "scores.png"))
+    export_plot(episode_rewards_her, "HER Score", "Seaquest DQN HER Reward", os.path.join(output_dir, "scores_her.png"))
     save_checkpoint(model, target_model, step, episode_rewards, output_dir)
     print(f"Saved scores.npy, scores.png, and checkpoint to {output_dir}/")
 
@@ -242,7 +255,7 @@ def train(n_iters=5000000, resume=False, seed=0, output_dir="results"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--n_iters", type=int, default=5000000, help="Number of training iterations (environment steps) to run")
+    parser.add_argument("--n_iters", type=int, default=10000000, help="Number of training iterations (environment steps) to run")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument("--resume", action="store_true", help="Resume from checkpoint")
     parser.add_argument("--output_dir", type=str, default="results", help="Directory where results and checkpoints will be saved")
