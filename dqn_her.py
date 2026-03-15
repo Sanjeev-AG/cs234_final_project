@@ -36,22 +36,22 @@ class ReplayBuffer(object):
         self.frontier_divers = 1
         self.current_phase = PHASE_COLLECTION
 
-        self.state = torch.zeros((capacity, state_dim), dtype=torch.float32).to(device)
-        self.next_state = torch.zeros((capacity, state_dim), dtype=torch.float32).to(device)
-        self.action = torch.zeros((capacity, 1), dtype=torch.int64).to(device)
-        self.reward = torch.zeros((capacity, 1), dtype=torch.float).to(device)
-        self.goal = torch.zeros((capacity, goal_dim), dtype=torch.float32).to(device)
-        self.done = torch.zeros((capacity, 1), dtype=torch.uint8).to(device)
-        self.priority = torch.ones((capacity,), dtype=torch.float32).to(device)
+        self.state = torch.zeros((capacity, state_dim), dtype=torch.float32)
+        self.next_state = torch.zeros((capacity, state_dim), dtype=torch.float32)
+        self.action = torch.zeros((capacity, 1), dtype=torch.int64)
+        self.reward = torch.zeros((capacity, 1), dtype=torch.float)
+        self.goal = torch.zeros((capacity, goal_dim), dtype=torch.float32)
+        self.done = torch.zeros((capacity, 1), dtype=torch.uint8)
+        self.priority = torch.ones((capacity,), dtype=torch.float32)
 
     def push(self, state, action, reward, next_state, done, goal):
         with torch.no_grad():
-            self.state[self.ptr] = torch.as_tensor(state, dtype=torch.float32).to(self.device)
-            self.next_state[self.ptr] = torch.as_tensor(next_state, dtype=torch.float32).to(self.device)
-            self.action[self.ptr] = torch.as_tensor(action, dtype=torch.int64).to(self.device)
-            self.reward[self.ptr] = torch.as_tensor(reward, dtype=torch.float32).to(self.device)
-            self.done[self.ptr] = torch.as_tensor(done, dtype=torch.uint8).to(self.device)
-            self.goal[self.ptr] = torch.as_tensor(goal, dtype=torch.float32).to(self.device)
+            self.state[self.ptr] = torch.as_tensor(state, dtype=torch.float32)
+            self.next_state[self.ptr] = torch.as_tensor(next_state, dtype=torch.float32)
+            self.action[self.ptr] = torch.as_tensor(action, dtype=torch.int64)
+            self.reward[self.ptr] = torch.as_tensor(reward, dtype=torch.float32)
+            self.done[self.ptr] = torch.as_tensor(done, dtype=torch.uint8)
+            self.goal[self.ptr] = torch.as_tensor(goal, dtype=torch.float32)
             self.priority[self.ptr] = self._compute_priority(reward, goal)
 
         self.ptr = (self.ptr + 1) % self.capacity
@@ -119,8 +119,8 @@ class ReplayBuffer(object):
         return self._fetch_indices(all_indices)
 
     def _fetch_indices(self, indices):
-        return (self.state[indices], self.next_state[indices], self.action[indices],
-                self.reward[indices], self.done[indices], self.goal[indices])
+        return (self.state[indices].to(self.device), self.next_state[indices].to(self.device), self.action[indices].to(self.device),
+                self.reward[indices], self.done[indices].to(self.device), self.goal[indices].to(self.device))
 
     def update_curriculum_state(self, frontier_divers, current_phase):
         """Called when curriculum advances so priorities reflect the new frontier."""
