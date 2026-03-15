@@ -83,6 +83,7 @@ def load_checkpoint(model, target_model, env_wrapper, dir):
 def normalize_goal(goal, config):
     """Normalize goal by actual max values, NOT 255."""
     goal_max = torch.tensor([config.goal_max_divers, config.goal_max_resurface])
+    goal_max = goal_max.to(goal.device)
     return goal.float() / goal_max
 
 

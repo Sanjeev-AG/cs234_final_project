@@ -256,4 +256,5 @@ class SeaQWrapper(gym.Wrapper):
     def normalize_goal(self, goal):
         """Normalize goal to [0, 1] range using actual max values."""
         goal_max = torch.tensor([self.config.goal_max_divers, self.config.goal_max_resurface])
+        goal_max = goal_max.to(goal.device)
         return goal.float() / goal_max
