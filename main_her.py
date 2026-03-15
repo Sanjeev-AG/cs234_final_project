@@ -12,6 +12,7 @@ Key fixes from original:
 
 import argparse
 import gymnasium as gym
+from gym.wrappers import FrameStackObservation
 import numpy as np
 import os
 import time
@@ -28,8 +29,10 @@ gym.register_envs(ale_py)
 
 env_name = "ALE/Seaquest-v5"
 env = gym.make(env_name, render_mode=None, obs_type="ram")
+env = FrameStackObservation(env=env, stack_size=4)
 env = SeaQWrapper(env, SeaQuestConfig())
-obs_size = env.observation_space.shape[0]
+obs_size = env.observation_space.shape[0] * env.observation_space.shape[1]
+state_offset = env.observation_space.shape[1] * (env.observation_space.shape[0] -1)obs_size = env.observation_space.shape[0]
 n_actions = env.action_space.n
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

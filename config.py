@@ -19,9 +19,9 @@ PHASE_RESURFACE = 1
 class SeaQuestConfig:
     def __init__(self):
         # Model architecture
-        self.n_layers = 3
-        self.layer_size = [512, 256, 128]
-        self.stack_size = 1
+        self.n_layers = 4
+        self.layer_size = [1024, 512, 256, 128]
+        self.stack_size = 4
 
         # Training
         self.batch_size = 256
