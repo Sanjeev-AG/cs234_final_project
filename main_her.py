@@ -169,6 +169,7 @@ def train(n_iters=10_000_000, resume=False, seed=0, output_dir="results", boost_
     model = DQN(env=env, config=config)
     target_model = DQN(env=env, config=config)
     target_model.load_state_dict(model.state_dict())
+    target_model.network.eval()
 
     obs = reset_env(env, seed=seed)
 
@@ -313,6 +314,7 @@ def train(n_iters=10_000_000, resume=False, seed=0, output_dir="results", boost_
         # Update target model
         if step % config.target_update_frequency == 0:
             target_model.load_state_dict(model.state_dict())
+            target_model.network.eval()
 
         # Periodic checkpoint
         if step > 0 and step % 2_000_000 == 0:
