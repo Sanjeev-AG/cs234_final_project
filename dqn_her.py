@@ -217,7 +217,6 @@ class DQN(nn.Module):
         return self.network.forward(obs.float()).squeeze()
 
     def compute_loss(self, obtained_Q, target_Q):
-        self.network.train()
         loss = torch.nn.functional.smooth_l1_loss(obtained_Q, target_Q)
         self.optimizer.zero_grad()
         loss.backward()
@@ -225,7 +224,6 @@ class DQN(nn.Module):
         self.optimizer.step()
 
     def select_action(self, in_state, goal=None):
-        self.network.eval()
         if np.random.rand() < self.epsilon:
             return self.env.action_space.sample()
         with torch.no_grad():
