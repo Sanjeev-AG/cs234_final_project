@@ -19,8 +19,8 @@ PHASE_RESURFACE = 1
 class SeaQuestConfig:
     def __init__(self):
         # Model architecture
-        self.n_layers = 4
-        self.layer_size = [512, 128, 128, 64]
+        self.n_layers = 3
+        self.layer_size = [512, 128, 128]
         # Reasoning for using the reduced number of layers: 
         # Seaquest has lot of redundant information in the 128 byte frame. We are trying to see how a GCRL would adapt for 4 layers.
         # Also, using drop-out of 0.2 to avoid over-fitting and forcing the neurons to learn
