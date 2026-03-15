@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 
 
-def build_mlp(input_size, output_size, n_layers, size):
+def build_mlp(input_size, output_size, n_layers, size, dropout=0.2):
     """
     Build a feed-forward network (multi-layer perceptron, or mlp) that maps
     input_size-dimensional vectors to output_size-dimensional vectors.
@@ -29,10 +29,11 @@ def build_mlp(input_size, output_size, n_layers, size):
     assert n_layers > 1, "The number of hidden layers should be atleast greater than 1"
     assert len(size) == n_layers, "The size array does not match the number of layers"
 
-    model = nn.Sequential(nn.Linear(in_features=input_size, out_features=size[0]), nn.ReLU())
+    model = nn.Sequential(nn.Linear(in_features=input_size, out_features=size[0]), nn.LayerNorm(size[0]), nn.ReLU(), nn.Dropout(p=dropout))
     for i in range(1, n_layers):
         model.append(nn.Linear(in_features=size[i-1], out_features=size[i]))
         model.append(nn.ReLU())
+        model.append(nn.Dropout(p=dropout))
     model.append(nn.Linear(in_features=size[-1], out_features=output_size))
 
     return model

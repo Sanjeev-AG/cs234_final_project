@@ -20,7 +20,12 @@ class SeaQuestConfig:
     def __init__(self):
         # Model architecture
         self.n_layers = 4
-        self.layer_size = [1024, 512, 256, 128]
+        self.layer_size = [512, 128, 128, 64]
+        # Reasoning for using the reduced number of layers: 
+        # Seaquest has lot of redundant information in the 128 byte frame. We are trying to see how a GCRL would adapt for 4 layers.
+        # Also, using drop-out of 0.2 to avoid over-fitting and forcing the neurons to learn
+        # Reference: https://deepsense.ai/wp-content/uploads/2016/09/1605.01335v1-4.pdf
+
         self.stack_size = 4
 
         # Training
