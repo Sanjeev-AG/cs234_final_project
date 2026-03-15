@@ -12,7 +12,7 @@ Key fixes from original:
 
 import argparse
 import gymnasium as gym
-from gym.wrappers import FrameStackObservation
+from gymnasium.wrappers import FrameStackObservation
 import numpy as np
 import os
 import time

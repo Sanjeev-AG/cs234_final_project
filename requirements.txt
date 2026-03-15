@@ -1,11 +1,7 @@
---extra-index-url https://download.pytorch.org/whl/cu121
 gymnasium[mujoco]==1.2.3
 ale-py==0.11.2
 stable-baselines3==2.7.1
 numpy<2.0
-torch==2.4.0
-torchvision
-torchaudio
 matplotlib
 scipy
 tqdm

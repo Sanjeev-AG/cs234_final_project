@@ -202,8 +202,10 @@ class DQN(nn.Module):
         if hasattr(env, 'num_extra_dimension'):
             observation_dim += env.num_extra_dimension
 
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.network = build_mlp(input_size=observation_dim, output_size=env.action_space.n,
                                  size=config.layer_size, n_layers=config.n_layers)
+        self.network.to(device)
         self.optimizer = torch.optim.Adam(self.network.parameters(), lr=self.lr)
         self.epsilon = config.epsilon
 
