@@ -32,7 +32,7 @@ env = gym.make(env_name, render_mode=None, obs_type="ram")
 env = FrameStackObservation(env=env, stack_size=4)
 env = SeaQWrapper(env, SeaQuestConfig())
 obs_size = env.observation_space.shape[0] * env.observation_space.shape[1]
-state_offset = env.observation_space.shape[1] * (env.observation_space.shape[0] -1)obs_size = env.observation_space.shape[0]
+state_offset = env.observation_space.shape[1] * (env.observation_space.shape[0] -1)
 n_actions = env.action_space.n
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
