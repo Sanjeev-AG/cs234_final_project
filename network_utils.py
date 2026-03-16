@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 
 
-def build_mlp(input_size, output_size, n_layers, size):
+def build_mlp(input_size, output_size, n_layers, size, include_softmax = False):
     """
     Build a feed-forward network (multi-layer perceptron, or mlp) that maps
     input_size-dimensional vectors to output_size-dimensional vectors.
@@ -34,6 +34,9 @@ def build_mlp(input_size, output_size, n_layers, size):
         model.append(nn.Linear(in_features=size[i-1], out_features=size[i]))
         model.append(nn.ReLU())
     model.append(nn.Linear(in_features=size[-1], out_features=output_size))
+
+    if include_softmax:
+        model.append(nn.Softmax())
 
     return model
 

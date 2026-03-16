@@ -21,6 +21,7 @@ import torch
 import torch.nn as nn
 from network_utils import build_mlp, np2torch
 from config import PHASE_COLLECTION, PHASE_RESURFACE
+from torch.distributions import Categorical
 
 
 class ReplayBuffer(object):
@@ -183,7 +184,7 @@ def generate_her_transitions(replay_buffer, episode_states, episode_actions,
                 if next_divers > current_divers and current_divers < goal_divers:
                     rewarded_up_to = min(int(next_divers), int(goal_divers))
                     for i in range(int(current_divers) + 1, rewarded_up_to + 1):
-                        her_reward += i * config.diver_milestone_bonus
+                        her_reward += pow(2, i-1)
 
             replay_buffer.push(episode_states[t], episode_actions[t], her_reward,
                                episode_next_states[t], her_done, relabeled_goal)
@@ -207,12 +208,30 @@ class DQN(nn.Module):
         self.optimizer = torch.optim.Adam(self.network.parameters(), lr=self.lr)
         self.epsilon = config.epsilon
 
-    def forward(self, obs, goal):
+        self.policy_model = build_mlp(input_size=observation_dim, output_size=env.action_space.n, size=config.layer_size, n_layers=config.n_layers, include_softmax=True)
+        self.target_q1 = build_mlp(input_size=observation_dim, output_size=env.action_space.n, size=config.layer_size, n_layers=config.n_layers)
+        self.target_q2 = build_mlp(input_size=observation_dim, output_size=env.action_space.n, size=config.layer_size, n_layers=config.n_layers)
+
+        self.policy_optimizer = torch.optim.Adam(self.policy_model.parameters(), lr=self.lr)
+        self.q1_optimizer = torch.optim.Adam(self.target_q1.parameters(), lr=self.lr)
+        self.q2_optimizer = torch.optim.Adam(self.target_q2.parameters(), lr=self.lr)
+
+    def forward(self, obs, goal, model=None):
         if isinstance(obs, np.ndarray):
             obs = np2torch(obs)
         goal = goal.to(obs.device).float()
         obs = torch.cat((obs, goal), dim=-1)
-        return self.network.forward(obs.float()).squeeze()
+        if self.config.use_sac:
+            if model is not None:
+                if model == 'critic1':
+                    return self.target_q1.forward(obs.float()).squeeze()
+                elif model == 'critic2':
+                    return self.target_q2.forward(obs.float()).squeeze()
+
+            return self.policy_model.forward(obs.float()).squeeze()
+
+        else:
+            return self.network.forward(obs.float()).squeeze()
 
     def compute_loss(self, obtained_Q, target_Q):
         loss = torch.nn.functional.smooth_l1_loss(obtained_Q, target_Q)
@@ -221,9 +240,34 @@ class DQN(nn.Module):
         torch.nn.utils.clip_grad_value_(self.network.parameters(), 100)
         self.optimizer.step()
 
+    def critic_loss(self, Q1, Q2, td_target):
+        loss = torch.nn.functional.smooth_l1_loss(Q1, td_target) + torch.nn.functional.smooth_l1_loss(Q2, td_target)
+        self.q1_optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_value_(self.target_q1.parameters(), 100)
+        self.q1_optimizer.step()
+
+        self.q2_optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_value_(self.target_q1.parameters(), 100)
+        self.q2_optimizer.step()
+
+    def policy_loss(self, loss):
+        self.policy_optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_value_(self.policy_model.parameters(), 100)
+        self.policy_optimizer.step()
+
     def select_action(self, in_state, goal=None):
-        if np.random.rand() < self.epsilon:
-            return self.env.action_space.sample()
-        with torch.no_grad():
-            output = self.forward(in_state, goal)
-            return torch.argmax(output).item()
+        if not self.config.use_sac:
+            if np.random.rand() < self.epsilon:
+                return self.env.action_space.sample()
+            with torch.no_grad():
+                output = self.forward(in_state, goal)
+                action = torch.argmax(output).item()
+            return action
+        else:
+            action_probs = self.forward(in_state, goal)
+            dist = Categorical(action_probs)
+            # Sample an action:
+            return dist.sample()

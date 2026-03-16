@@ -169,7 +169,6 @@ def train(n_iters=10_000_000, resume=False, seed=0, output_dir="results", boost_
     model = DQN(env=env, config=config)
     target_model = DQN(env=env, config=config)
     target_model.load_state_dict(model.state_dict())
-    target_model.network.eval()
 
     obs = reset_env(env, seed=seed)
 
@@ -255,16 +254,44 @@ def train(n_iters=10_000_000, resume=False, seed=0, output_dir="results", boost_
 
             goal_norm = normalize_goal(goal, config)
 
-            with torch.no_grad():
-                next_state_q = model.forward(next_state, goal=goal_norm)
-                target_next_state_q = target_model.forward(next_state, goal=goal_norm)
-                max_action = next_state_q.max(dim=1).indices.reshape(-1, 1)
-                max_Q = torch.gather(target_next_state_q, dim=1, index=max_action)
-                td_target = rewards + (config.gamma * max_Q * (1 - terminal.float()))
 
-            obtained_q = model.forward(state, goal=goal_norm)
-            q_action = torch.gather(obtained_q, dim=1, index=action_batch)
-            model.compute_loss(q_action.squeeze(), td_target.squeeze())
+            if not env.config.use_sac: # Use DQN + HER
+                with torch.no_grad():
+                    next_state_q = model.forward(next_state, goal=goal_norm)
+                    target_next_state_q = target_model.forward(next_state, goal=goal_norm)
+                    max_action = next_state_q.max(dim=1).indices.reshape(-1, 1)
+                    max_Q = torch.gather(target_next_state_q, dim=1, index=max_action)
+                    td_target = rewards + (config.gamma * max_Q * (1 - terminal.float()))
+
+                obtained_q = model.forward(state, goal=goal_norm)
+                q_action = torch.gather(obtained_q, dim=1, index=action_batch)
+                model.compute_loss(q_action.squeeze(), td_target.squeeze())
+            else:
+                # Update the target network first:
+                with torch.no_grad():
+                    critic_q1 = model.forward(next_state, goal=goal_norm, model='critic1') # Batch size x action space
+                    critic_q2 = model.forward(next_state, goal=goal_norm, model='critic2') # Batch size x action space
+                    action_probs = model.forward(next_state, goal=goal_norm)
+                    # Compute min_critic_q
+                    min_q = torch.min(critic_q1, critic_q2) # Batch size x action space
+                    V_targ = torch.sum(action_probs * (min_q - config.alpha * torch.log(action_probs)), dim=1)
+                    td_target = rewards + (config.gamma * (1 - terminal.float()) * V_targ)
+
+                    # Compute loss for the policy model:
+                    critic_q1 = model.forward(state, goal=goal_norm)
+                    critic_q2 = model.forward(state, goal=goal_norm)
+
+                    # Compute loss and train critic q1 and critic q1
+                    # Get the q_value:
+                    curr_q1 = critic_q1.gather(dim=1, index=action_batch)
+                    curr_q2 = critic_q2.gather(dim=1, index=action_batch)
+                    model.critic_loss(curr_q1, curr_q2, td_target)
+
+
+                    min_q = torch.min(critic_q1, critic_q2)
+                    action_probs = model.forward(state, goal=goal_norm)
+                    actor_loss = -torch.sum(action_probs * (min_q - config.alpha * torch.log(action_probs)), dim=1)
+                    model.policy_loss(actor_loss.squeeze())
 
         if done:
             episode_rewards.append(episode_reward)
@@ -314,7 +341,6 @@ def train(n_iters=10_000_000, resume=False, seed=0, output_dir="results", boost_
         # Update target model
         if step % config.target_update_frequency == 0:
             target_model.load_state_dict(model.state_dict())
-            target_model.network.eval()
 
         # Periodic checkpoint
         if step > 0 and step % 2_000_000 == 0:
