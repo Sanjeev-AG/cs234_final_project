@@ -274,24 +274,24 @@ def train(n_iters=10_000_000, resume=False, seed=0, output_dir="results", boost_
                     action_probs = model.forward(next_state, goal=goal_norm)
                     # Compute min_critic_q
                     min_q = torch.min(critic_q1, critic_q2) # Batch size x action space
-                    V_targ = torch.sum(action_probs * (min_q - config.alpha * torch.log(action_probs)), dim=1)
+                    V_targ = torch.sum(action_probs * (min_q - config.alpha * torch.log(action_probs + 1e-8)), dim=1)
                     td_target = rewards + (config.gamma * (1 - terminal.float()) * V_targ)
 
-                    # Compute loss for the policy model:
-                    critic_q1 = model.forward(state, goal=goal_norm)
-                    critic_q2 = model.forward(state, goal=goal_norm)
+                # Compute loss for the policy model:
+                critic_q1 = model.forward(state, goal=goal_norm, model='critic1').detach()
+                critic_q2 = model.forward(state, goal=goal_norm, model='critic2').detach()
 
-                    # Compute loss and train critic q1 and critic q1
-                    # Get the q_value:
-                    curr_q1 = critic_q1.gather(dim=1, index=action_batch)
-                    curr_q2 = critic_q2.gather(dim=1, index=action_batch)
-                    model.critic_loss(curr_q1, curr_q2, td_target)
+                # Compute loss and train critic q1 and critic q1
+                # Get the q_value:
+                curr_q1 = critic_q1.gather(dim=1, index=action_batch)
+                curr_q2 = critic_q2.gather(dim=1, index=action_batch)
+                model.critic_loss(curr_q1, curr_q2, td_target)
 
 
-                    min_q = torch.min(critic_q1, critic_q2)
-                    action_probs = model.forward(state, goal=goal_norm)
-                    actor_loss = -torch.sum(action_probs * (min_q - config.alpha * torch.log(action_probs)), dim=1)
-                    model.policy_loss(actor_loss.squeeze())
+                min_q = torch.min(critic_q1, critic_q2)
+                action_probs = model.forward(state, goal=goal_norm)
+                actor_loss = -torch.sum(action_probs * (min_q - config.alpha * torch.log(action_probs)), dim=1)
+                model.policy_loss(actor_loss.mean())
 
         if done:
             episode_rewards.append(episode_reward)
@@ -340,7 +340,14 @@ def train(n_iters=10_000_000, resume=False, seed=0, output_dir="results", boost_
 
         # Update target model
         if step % config.target_update_frequency == 0:
-            target_model.load_state_dict(model.state_dict())
+            if not config.use_sac:
+                target_model.load_state_dict(model.state_dict())
+            else:
+                # Polyak soft update for SAC critics
+                for param, target_param in zip(model.q1_net.parameters(), model.target_q1.parameters()):
+                    target_param.data.copy_(config.tau * param.data + (1 - config.tau) * target_param.data)
+                for param, target_param in zip(model.q2_net.parameters(), model.target_q2.parameters()):
+                    target_param.data.copy_(config.tau * param.data + (1 - config.tau) * target_param.data)
 
         # Periodic checkpoint
         if step > 0 and step % 2_000_000 == 0:

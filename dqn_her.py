@@ -196,6 +196,7 @@ class DQN(nn.Module):
         self.env = env
         self.lr = config.lr
         self.gamma = config.gamma
+        self.config = config
 
         observation_dim = self.env.observation_space.shape[-1] * config.stack_size
         if hasattr(env, 'num_goal_dimension'):
@@ -208,13 +209,16 @@ class DQN(nn.Module):
         self.optimizer = torch.optim.Adam(self.network.parameters(), lr=self.lr)
         self.epsilon = config.epsilon
 
-        self.policy_model = build_mlp(input_size=observation_dim, output_size=env.action_space.n, size=config.layer_size, n_layers=config.n_layers, include_softmax=True)
-        self.target_q1 = build_mlp(input_size=observation_dim, output_size=env.action_space.n, size=config.layer_size, n_layers=config.n_layers)
-        self.target_q2 = build_mlp(input_size=observation_dim, output_size=env.action_space.n, size=config.layer_size, n_layers=config.n_layers)
+        if config.use_sac:
+            self.policy_model = build_mlp(input_size=observation_dim, output_size=env.action_space.n, size=config.layer_size, n_layers=config.n_layers, include_softmax=True)
+            self.q1_net = build_mlp(input_size=observation_dim, output_size=env.action_space.n, size=config.layer_size, n_layers=config.n_layers)
+            self.q2_net = build_mlp(input_size=observation_dim, output_size=env.action_space.n, size=config.layer_size, n_layers=config.n_layers)
+            self.target_q1 = self.q1_net
+            self.target_q2 = self.q2_net
 
-        self.policy_optimizer = torch.optim.Adam(self.policy_model.parameters(), lr=self.lr)
-        self.q1_optimizer = torch.optim.Adam(self.target_q1.parameters(), lr=self.lr)
-        self.q2_optimizer = torch.optim.Adam(self.target_q2.parameters(), lr=self.lr)
+            self.policy_optimizer = torch.optim.Adam(self.policy_model.parameters(), lr=self.lr)
+            self.q1_optimizer = torch.optim.Adam(self.q1_net.parameters(), lr=self.lr)
+            self.q2_optimizer = torch.optim.Adam(self.q2_net.parameters(), lr=self.lr)
 
     def forward(self, obs, goal, model=None):
         if isinstance(obs, np.ndarray):
@@ -241,15 +245,16 @@ class DQN(nn.Module):
         self.optimizer.step()
 
     def critic_loss(self, Q1, Q2, td_target):
-        loss = torch.nn.functional.smooth_l1_loss(Q1, td_target) + torch.nn.functional.smooth_l1_loss(Q2, td_target)
+        loss1 = torch.nn.functional.smooth_l1_loss(Q1, td_target)
         self.q1_optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_value_(self.target_q1.parameters(), 100)
+        loss1.backward()
+        torch.nn.utils.clip_grad_value_(self.q1_net.parameters(), 100)
         self.q1_optimizer.step()
 
+        loss2 = torch.nn.functional.smooth_l1_loss(Q2, td_target)
         self.q2_optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_value_(self.target_q1.parameters(), 100)
+        loss2.backward()
+        torch.nn.utils.clip_grad_value_(self.q2_net.parameters(), 100)
         self.q2_optimizer.step()
 
     def policy_loss(self, loss):
@@ -270,4 +275,4 @@ class DQN(nn.Module):
             action_probs = self.forward(in_state, goal)
             dist = Categorical(action_probs)
             # Sample an action:
-            return dist.sample()
+            return dist.sample().item()

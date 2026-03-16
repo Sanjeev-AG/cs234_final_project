@@ -36,7 +36,7 @@ def build_mlp(input_size, output_size, n_layers, size, include_softmax = False):
     model.append(nn.Linear(in_features=size[-1], out_features=output_size))
 
     if include_softmax:
-        model.append(nn.Softmax())
+        model.append(nn.Softmax(dim=-1))
 
     return model
 
