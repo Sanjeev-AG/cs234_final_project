@@ -59,6 +59,9 @@ def save_checkpoint(model, target_model, step, episode_rewards, env_wrapper,
         'max_divers_to_collect': env_wrapper.max_divers_to_collect,
         'epsilon_state': epsilon_state,
     }
+    if model.config.use_sac:
+        checkpoint['log_alpha'] = model.log_alpha.detach().cpu()
+        checkpoint['alpha_optimizer_state_dict'] = model.alpha_optimizer.state_dict()
     torch.save(checkpoint, os.path.join(dir, "checkpoint.pt"))
 
 
@@ -74,6 +77,10 @@ def load_checkpoint(model, target_model, env_wrapper, dir):
     if 'current_phase' in checkpoint:
         env_wrapper.current_phase = checkpoint['current_phase']
         env_wrapper.max_divers_to_collect = checkpoint['max_divers_to_collect']
+    if model.config.use_sac and 'log_alpha' in checkpoint:
+        model.log_alpha.data.copy_(checkpoint['log_alpha'].to(model.log_alpha.device))
+        model.alpha_optimizer.load_state_dict(checkpoint['alpha_optimizer_state_dict'])
+        model.config.alpha = model.log_alpha.exp().item()
     return checkpoint
 
 
@@ -267,31 +274,34 @@ def train(n_iters=10_000_000, resume=False, seed=0, output_dir="results", boost_
                 q_action = torch.gather(obtained_q, dim=1, index=action_batch)
                 model.compute_loss(q_action.squeeze(), td_target.squeeze())
             else:
-                # Update the target network first:
+                # Compute td_target using TARGET networks (stable bootstrap)
                 with torch.no_grad():
-                    critic_q1 = model.forward(next_state, goal=goal_norm, model='critic1') # Batch size x action space
-                    critic_q2 = model.forward(next_state, goal=goal_norm, model='critic2') # Batch size x action space
+                    target_q1 = model.forward(next_state, goal=goal_norm, model='target_q1')
+                    target_q2 = model.forward(next_state, goal=goal_norm, model='target_q2')
                     action_probs = model.forward(next_state, goal=goal_norm)
-                    # Compute min_critic_q
-                    min_q = torch.min(critic_q1, critic_q2) # Batch size x action space
-                    V_targ = torch.sum(action_probs * (min_q - config.alpha * torch.log(action_probs + 1e-8)), dim=1)
+                    min_q = torch.min(target_q1, target_q2)
+                    V_targ = torch.sum(action_probs * (min_q - model.config.alpha * torch.log(action_probs + 1e-8)), dim=1, keepdim=True)
                     td_target = rewards + (config.gamma * (1 - terminal.float()) * V_targ)
 
-                # Compute loss for the policy model:
-                critic_q1 = model.forward(state, goal=goal_norm, model='critic1').detach()
-                critic_q2 = model.forward(state, goal=goal_norm, model='critic2').detach()
-
-                # Compute loss and train critic q1 and critic q1
-                # Get the q_value:
+                # Critic loss — online networks, need gradients
+                critic_q1 = model.forward(state, goal=goal_norm, model='q1')
+                critic_q2 = model.forward(state, goal=goal_norm, model='q2')
                 curr_q1 = critic_q1.gather(dim=1, index=action_batch)
                 curr_q2 = critic_q2.gather(dim=1, index=action_batch)
-                model.critic_loss(curr_q1, curr_q2, td_target)
+                model.critic_loss(curr_q1.squeeze(), curr_q2.squeeze(), td_target.squeeze())
 
-
-                min_q = torch.min(critic_q1, critic_q2)
+                # Policy loss — detach critics so policy gradients don't flow into them
+                with torch.no_grad():
+                    min_q = torch.min(critic_q1, critic_q2)
                 action_probs = model.forward(state, goal=goal_norm)
-                actor_loss = -torch.sum(action_probs * (min_q - config.alpha * torch.log(action_probs)), dim=1)
+                log_pi = torch.log(action_probs + 1e-8)
+                actor_loss = -torch.sum(action_probs * (min_q - model.config.alpha * log_pi), dim=1)
                 model.policy_loss(actor_loss.mean())
+
+                model.alpha_loss(action_probs, log_pi)
+
+                # Soft update target networks
+                model.soft_update_targets()
 
         if done:
             episode_rewards.append(episode_reward)
@@ -338,16 +348,9 @@ def train(n_iters=10_000_000, resume=False, seed=0, output_dir="results", boost_
         # Update epsilon
         model.epsilon = eps_scheduler.step()
 
-        # Update target model
-        if step % config.target_update_frequency == 0:
-            if not config.use_sac:
-                target_model.load_state_dict(model.state_dict())
-            else:
-                # Polyak soft update for SAC critics
-                for param, target_param in zip(model.q1_net.parameters(), model.target_q1.parameters()):
-                    target_param.data.copy_(config.tau * param.data + (1 - config.tau) * target_param.data)
-                for param, target_param in zip(model.q2_net.parameters(), model.target_q2.parameters()):
-                    target_param.data.copy_(config.tau * param.data + (1 - config.tau) * target_param.data)
+        # Update target model (SAC soft updates happen per training step above)
+        if not config.use_sac and step % config.target_update_frequency == 0:
+            target_model.load_state_dict(model.state_dict())
 
         # Periodic checkpoint
         if step > 0 and step % 2_000_000 == 0:

@@ -82,7 +82,7 @@ class SeaQuestConfig:
         self.phase2_epsilon_min = 0.05
         self.phase2_epsilon_decay_steps = 500_000
 
-        self.use_sac = False
+        self.use_sac = True
         self.alpha = 1
 
     # RAM byte addresses for Seaquest

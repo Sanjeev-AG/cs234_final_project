@@ -16,6 +16,7 @@ Sampling strategy: Mixed uniform + priority.
 - 40% of batch: uniform-sampled (maintain earlier skills, prevent forgetting)
 """
 
+import copy
 import numpy as np
 import torch
 import torch.nn as nn
@@ -213,12 +214,24 @@ class DQN(nn.Module):
             self.policy_model = build_mlp(input_size=observation_dim, output_size=env.action_space.n, size=config.layer_size, n_layers=config.n_layers, include_softmax=True)
             self.q1_net = build_mlp(input_size=observation_dim, output_size=env.action_space.n, size=config.layer_size, n_layers=config.n_layers)
             self.q2_net = build_mlp(input_size=observation_dim, output_size=env.action_space.n, size=config.layer_size, n_layers=config.n_layers)
-            self.target_q1 = self.q1_net
-            self.target_q2 = self.q2_net
+            self.target_q1 = copy.deepcopy(self.q1_net)
+            self.target_q2 = copy.deepcopy(self.q2_net)
+            for p in self.target_q1.parameters():
+                p.requires_grad = False
+            for p in self.target_q2.parameters():
+                p.requires_grad = False
 
             self.policy_optimizer = torch.optim.Adam(self.policy_model.parameters(), lr=self.lr)
             self.q1_optimizer = torch.optim.Adam(self.q1_net.parameters(), lr=self.lr)
             self.q2_optimizer = torch.optim.Adam(self.q2_net.parameters(), lr=self.lr)
+
+            # Target entropy is typically set based on action space size
+            self.target_entropy = -0.98 * np.log(1.0 / env.action_space.n)
+
+            # We learn log_alpha instead of alpha to ensure alpha remains positive
+            dev = next(self.q1_net.parameters()).device
+            self.log_alpha = torch.tensor(np.log(self.config.alpha), requires_grad=True, dtype=torch.float32, device=dev)
+            self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=self.lr)
 
     def forward(self, obs, goal, model=None):
         if isinstance(obs, np.ndarray):
@@ -226,14 +239,15 @@ class DQN(nn.Module):
         goal = goal.to(obs.device).float()
         obs = torch.cat((obs, goal), dim=-1)
         if self.config.use_sac:
-            if model is not None:
-                if model == 'critic1':
-                    return self.target_q1.forward(obs.float()).squeeze()
-                elif model == 'critic2':
-                    return self.target_q2.forward(obs.float()).squeeze()
-
+            if model == 'q1':
+                return self.q1_net.forward(obs.float()).squeeze()
+            elif model == 'q2':
+                return self.q2_net.forward(obs.float()).squeeze()
+            elif model == 'target_q1':
+                return self.target_q1.forward(obs.float()).squeeze()
+            elif model == 'target_q2':
+                return self.target_q2.forward(obs.float()).squeeze()
             return self.policy_model.forward(obs.float()).squeeze()
-
         else:
             return self.network.forward(obs.float()).squeeze()
 
@@ -262,6 +276,30 @@ class DQN(nn.Module):
         loss.backward()
         torch.nn.utils.clip_grad_value_(self.policy_model.parameters(), 100)
         self.policy_optimizer.step()
+
+    def alpha_loss(self, action_probs, log_pi):
+        # Calculate the entropy of the current policy
+        # action_probs: [batch_size, num_actions]
+        # log_pi: log of action_probs
+
+        # Detach action_probs and log_pi because we only want to train log_alpha, not the actor here
+        alpha_loss = (action_probs.detach() * (-self.log_alpha.exp() * (log_pi + self.target_entropy).detach())).sum(dim=1).mean()
+
+        self.alpha_optimizer.zero_grad()
+        alpha_loss.backward()
+        self.alpha_optimizer.step()
+
+        # Update config.alpha so the rest of the algorithm uses the new value
+        self.config.alpha = self.log_alpha.exp().item()
+
+        return alpha_loss.item()
+
+    def soft_update_targets(self, tau=0.005):
+        with torch.no_grad():
+            for p, p_targ in zip(self.q1_net.parameters(), self.target_q1.parameters()):
+                p_targ.data.mul_(1 - tau).add_(tau * p.data)
+            for p, p_targ in zip(self.q2_net.parameters(), self.target_q2.parameters()):
+                p_targ.data.mul_(1 - tau).add_(tau * p.data)
 
     def select_action(self, in_state, goal=None):
         if not self.config.use_sac:
