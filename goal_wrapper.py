@@ -199,7 +199,7 @@ class SeaQWrapper(gym.Wrapper):
                 divers_to_reward = min(total, goal_divers)
                 new_milestones = divers_to_reward - self._milestone_divers_rewarded
                 for i in range(self._milestone_divers_rewarded + 1, divers_to_reward + 1):
-                    reward += i * self.config.diver_milestone_bonus
+                    reward += pow(2, i-1)
                 self._milestone_divers_rewarded = divers_to_reward
 
 

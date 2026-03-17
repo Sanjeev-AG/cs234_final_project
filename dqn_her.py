@@ -16,11 +16,13 @@ Sampling strategy: Mixed uniform + priority.
 - 40% of batch: uniform-sampled (maintain earlier skills, prevent forgetting)
 """
 
+import copy
 import numpy as np
 import torch
 import torch.nn as nn
 from network_utils import build_mlp, np2torch
 from config import PHASE_COLLECTION, PHASE_RESURFACE
+from torch.distributions import Categorical
 
 
 class ReplayBuffer(object):
@@ -183,7 +185,7 @@ def generate_her_transitions(replay_buffer, episode_states, episode_actions,
                 if next_divers > current_divers and current_divers < goal_divers:
                     rewarded_up_to = min(int(next_divers), int(goal_divers))
                     for i in range(int(current_divers) + 1, rewarded_up_to + 1):
-                        her_reward += i * config.diver_milestone_bonus
+                        her_reward += pow(2, i-1)
 
             replay_buffer.push(episode_states[t], episode_actions[t], her_reward,
                                episode_next_states[t], her_done, relabeled_goal)
@@ -195,6 +197,7 @@ class DQN(nn.Module):
         self.env = env
         self.lr = config.lr
         self.gamma = config.gamma
+        self.config = config
 
         observation_dim = self.env.observation_space.shape[-1] * config.stack_size
         if hasattr(env, 'num_goal_dimension'):
@@ -207,12 +210,46 @@ class DQN(nn.Module):
         self.optimizer = torch.optim.Adam(self.network.parameters(), lr=self.lr)
         self.epsilon = config.epsilon
 
-    def forward(self, obs, goal):
+        if config.use_sac:
+            self.policy_model = build_mlp(input_size=observation_dim, output_size=env.action_space.n, size=config.layer_size, n_layers=config.n_layers, include_softmax=True)
+            self.q1_net = build_mlp(input_size=observation_dim, output_size=env.action_space.n, size=config.layer_size, n_layers=config.n_layers)
+            self.q2_net = build_mlp(input_size=observation_dim, output_size=env.action_space.n, size=config.layer_size, n_layers=config.n_layers)
+            self.target_q1 = copy.deepcopy(self.q1_net)
+            self.target_q2 = copy.deepcopy(self.q2_net)
+            for p in self.target_q1.parameters():
+                p.requires_grad = False
+            for p in self.target_q2.parameters():
+                p.requires_grad = False
+
+            self.policy_optimizer = torch.optim.Adam(self.policy_model.parameters(), lr=self.lr)
+            self.q1_optimizer = torch.optim.Adam(self.q1_net.parameters(), lr=self.lr)
+            self.q2_optimizer = torch.optim.Adam(self.q2_net.parameters(), lr=self.lr)
+
+            # Target entropy is typically set based on action space size
+            self.target_entropy = -0.98 * np.log(1.0 / env.action_space.n)
+
+            # We learn log_alpha instead of alpha to ensure alpha remains positive
+            dev = next(self.q1_net.parameters()).device
+            self.log_alpha = torch.tensor(np.log(self.config.alpha), requires_grad=True, dtype=torch.float32, device=dev)
+            self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=self.lr)
+
+    def forward(self, obs, goal, model=None):
         if isinstance(obs, np.ndarray):
             obs = np2torch(obs)
         goal = goal.to(obs.device).float()
         obs = torch.cat((obs, goal), dim=-1)
-        return self.network.forward(obs.float()).squeeze()
+        if self.config.use_sac:
+            if model == 'q1':
+                return self.q1_net.forward(obs.float()).squeeze()
+            elif model == 'q2':
+                return self.q2_net.forward(obs.float()).squeeze()
+            elif model == 'target_q1':
+                return self.target_q1.forward(obs.float()).squeeze()
+            elif model == 'target_q2':
+                return self.target_q2.forward(obs.float()).squeeze()
+            return self.policy_model.forward(obs.float()).squeeze()
+        else:
+            return self.network.forward(obs.float()).squeeze()
 
     def compute_loss(self, obtained_Q, target_Q):
         loss = torch.nn.functional.smooth_l1_loss(obtained_Q, target_Q)
@@ -221,9 +258,59 @@ class DQN(nn.Module):
         torch.nn.utils.clip_grad_value_(self.network.parameters(), 100)
         self.optimizer.step()
 
-    def select_action(self, in_state, goal=None):
-        if np.random.rand() < self.epsilon:
-            return self.env.action_space.sample()
+    def critic_loss(self, Q1, Q2, td_target):
+        loss1 = torch.nn.functional.smooth_l1_loss(Q1, td_target)
+        self.q1_optimizer.zero_grad()
+        loss1.backward()
+        torch.nn.utils.clip_grad_value_(self.q1_net.parameters(), 100)
+        self.q1_optimizer.step()
+
+        loss2 = torch.nn.functional.smooth_l1_loss(Q2, td_target)
+        self.q2_optimizer.zero_grad()
+        loss2.backward()
+        torch.nn.utils.clip_grad_value_(self.q2_net.parameters(), 100)
+        self.q2_optimizer.step()
+
+    def policy_loss(self, loss):
+        self.policy_optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_value_(self.policy_model.parameters(), 100)
+        self.policy_optimizer.step()
+
+    def alpha_loss(self, action_probs, log_pi):
+        # Calculate the entropy of the current policy
+        # action_probs: [batch_size, num_actions]
+        # log_pi: log of action_probs
+
+        # Detach action_probs and log_pi because we only want to train log_alpha, not the actor here
+        alpha_loss = (action_probs.detach() * (-self.log_alpha.exp() * (log_pi + self.target_entropy).detach())).sum(dim=1).mean()
+
+        self.alpha_optimizer.zero_grad()
+        alpha_loss.backward()
+        self.alpha_optimizer.step()
+
+        # Update config.alpha so the rest of the algorithm uses the new value
+        self.config.alpha = self.log_alpha.exp().item()
+
+        return alpha_loss.item()
+
+    def soft_update_targets(self, tau=0.005):
         with torch.no_grad():
-            output = self.forward(in_state, goal)
-            return torch.argmax(output).item()
+            for p, p_targ in zip(self.q1_net.parameters(), self.target_q1.parameters()):
+                p_targ.data.mul_(1 - tau).add_(tau * p.data)
+            for p, p_targ in zip(self.q2_net.parameters(), self.target_q2.parameters()):
+                p_targ.data.mul_(1 - tau).add_(tau * p.data)
+
+    def select_action(self, in_state, goal=None):
+        if not self.config.use_sac:
+            if np.random.rand() < self.epsilon:
+                return self.env.action_space.sample()
+            with torch.no_grad():
+                output = self.forward(in_state, goal)
+                action = torch.argmax(output).item()
+            return action
+        else:
+            action_probs = self.forward(in_state, goal)
+            dist = Categorical(action_probs)
+            # Sample an action:
+            return dist.sample().item()
