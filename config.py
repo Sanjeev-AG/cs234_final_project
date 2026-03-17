@@ -28,7 +28,7 @@ class SeaQuestConfig:
         self.lr = 1e-4
         self.gamma = 0.99
         self.epsilon = 1.0
-        self.replay_buffer_size = 2_000_000
+        self.replay_buffer_size = 4_000_000
         self.target_update_frequency = 10_000
 
         # Goal normalization — divide by ACTUAL max values, not 255
