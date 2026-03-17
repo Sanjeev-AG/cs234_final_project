@@ -200,10 +200,11 @@ def train(n_iters=10_000_000, resume=False, seed=0, output_dir="results", boost_
             episode_rewards = checkpoint['episode_rewards']
             if 'epsilon_state' in checkpoint and checkpoint['epsilon_state']:
                 eps_scheduler.load_state(checkpoint['epsilon_state'])
-            print(f"Resumed from step {start_step}, {len(episode_rewards)} episodes, "
-                  f"epsilon={model.epsilon:.4f}, phase={env.current_phase}, "
+            eps_info = f", epsilon={model.epsilon:.4f}" if not config.use_sac else ""
+            print(f"Resumed from step {start_step}, {len(episode_rewards)} episodes"
+                  f"{eps_info}, phase={env.current_phase}, "
                   f"max_divers={env.max_divers_to_collect}")
-            if boost_epsilon:
+            if boost_epsilon and not config.use_sac:
                 eps_scheduler.current_epsilon = boost_epsilon
                 eps_scheduler.target_epsilon = config.phase1_epsilon_min
                 eps_scheduler.decay_rate = ((boost_epsilon - config.phase1_epsilon_min)/ config.curriculum_bump_decay_steps)
@@ -308,9 +309,10 @@ def train(n_iters=10_000_000, resume=False, seed=0, output_dir="results", boost_
             episode_rewards_her.append(episode_reward_her)
 
             phase_name = "COLLECT" if env.current_phase == PHASE_COLLECTION else "RESURFACE"
+            eps_str = f", Eps={model.epsilon:.3f}" if not config.use_sac else ""
             print(f"Ep {len(episode_rewards)}, Phase={phase_name}, "
                   f"Reward={episode_reward:.0f}, HER_R={episode_reward_her:.0f}, "
-                  f"Step={step}, Eps={model.epsilon:.3f}, "
+                  f"Step={step}{eps_str}, "
                   f"Goal={env.desired_goal.tolist()}, "
                   f"MaxDivers={env.max_divers_to_collect}, "
                   f"PeakDivers={env.peak_divers}, "
@@ -340,13 +342,15 @@ def train(n_iters=10_000_000, resume=False, seed=0, output_dir="results", boost_
                 eps_scheduler.on_curriculum_advance(env.current_phase)
                 replay_buffer.update_curriculum_state(
                     env.max_divers_to_collect, env.current_phase)
-                print(f"  *** Epsilon bumped to {eps_scheduler.current_epsilon:.3f} "
-                      f"(target={eps_scheduler.target_epsilon:.3f}) ***")
+                if not config.use_sac:
+                    print(f"  *** Epsilon bumped to {eps_scheduler.current_epsilon:.3f} "
+                          f"(target={eps_scheduler.target_epsilon:.3f}) ***")
                 prev_phase = env.current_phase
                 prev_max_divers = env.max_divers_to_collect
 
-        # Update epsilon
-        model.epsilon = eps_scheduler.step()
+        # Update epsilon (only for DQN)
+        if not config.use_sac:
+            model.epsilon = eps_scheduler.step()
 
         # Update target model (SAC soft updates happen per training step above)
         if not config.use_sac and step % config.target_update_frequency == 0:
